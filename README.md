@@ -3,8 +3,6 @@
 A Chrome extension that removes Twitch ads by serving an **ad-free copy of the
 same stream** — and hides the ad when no such copy exists.
 
-No proxy, no certificate, no system configuration. Load it and watch.
-
 ---
 
 ## How it works
@@ -57,38 +55,6 @@ avoided, quality served, and a **per-channel tally** of breaks blocked versus le
 through — the number that tells you whether the tool is earning its place on the
 channels you actually watch.
 
-Stats persist across browser restarts.
-
-## Tests
-
-```bash
-node --test tests/*.test.mjs
-```
-
-125 offline tests, no network and no browser: HLS parsing against real captured
-playlists (including a real ad break), the decision engine, telemetry
-aggregation, the popup formatting, and the build output.
-
-They are not enough on their own. Two significant bugs slipped through because
-the tests described an imagined Twitch rather than the real one — obsolete
-playlist paths, and a message that froze the player. Hence a smoke test that
-loads the extension into a real Chrome on a real stream:
-
-```bash
-node tests/smoke.mjs https://www.twitch.tv/some_channel 90
-```
-
-It checks the four links of the chain (hook injected, `Worker` replaced, player
-worker hooked, playlists intercepted) and counts breaks, replacements and
-reloads. `CONTROL=1` replays the same scenario **without** the extension, to tell
-a broken tool apart from a page that simply will not start.
-
-To see which `playerType` values currently return an unstitched feed:
-
-```bash
-node tests/probe-candidates.mjs some_channel another_channel
-```
-
 ## Layout
 
 ```
@@ -107,24 +73,5 @@ tests/                offline tests, smoke test, candidate probe
 
 Every module under `src/lib` is pure: all I/O goes through injected functions.
 That is what makes the engine testable without a network or a browser.
-
-## Privacy
-
-The extension requests one permission, `storage`, and runs only on
-`*.twitch.tv`. It never reads, stores or transmits your credentials: backup
-requests are anonymous by construction, carrying nothing beyond the public
-player Client-ID.
-
-That is not only a privacy choice — it works better. Measured on one channel, at
-the same instant, on the same preroll: with identity headers attached, eleven
-candidates out of eleven came back stitched; without them, a clean feed was
-found. Twitch ties the request to the same viewer and serves the same campaign
-everywhere, whereas a backup feed exists precisely to look like a different
-viewer.
-
-## Notes
-
-This is a personal project, published in case it is useful. Twitch changes these
-internals regularly: the persisted GraphQL query hash, the playlist paths and the
 set of usable `playerType` values are all moving targets, and any of them can
 break the extension without warning.
