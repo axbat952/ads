@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Twitch Ads Remove</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <div class="logo">▶</div>
+      <div>
+        <h1>Twitch Ads Remove</h1>
+        <div class="channel">Channel: <b id="channel">—</b></div>
+      </div>
+    </header>
+
+    <section class="status">
+      <span class="dot" id="dot"></span>
+      <div>
+        <div class="status-title" id="status-title">Waiting for a stream…</div>
+        <div class="status-detail" id="status-detail">
+          Open a Twitch channel — the engine hooks into the player when playback starts.
+        </div>
+      </div>
+    </section>
+
+    <div class="countdown" id="countdown" hidden>
+      <div class="countdown-head">
+        <span id="countdown-text"></span>
+        <span id="countdown-detail" class="countdown-detail"></span>
+      </div>
+      <div class="bar"><div class="bar-fill" id="countdown-bar"></div></div>
+    </div>
+
+    <div class="grid" id="grid"></div>
+
+    <div id="tally"></div>
+
+    <footer>
+      <span id="last-break">No ad break yet.</span>
+      <span class="actions">
+        <button id="log-toggle" type="button">Log</button>
+        <button id="reset" type="button">Reset</button>
+      </span>
+    </footer>
+
+    <pre id="log" hidden></pre>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "Twitch Ads Remove",
+  "version": "1.0.0",
+  "description": "Removes Twitch ads by serving an ad-free copy of the same stream, and hides the ad when none exists.",
+  "permissions": [
+    "storage"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Twitch Ads Remove",
+    "default_icon": {
+      "16": "icons/16.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.twitch.tv/*"
+      ],
+      "js": [
+        "page/hook.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "*://*.twitch.tv/*"
+      ],
+      "js": [
+        "page/bridge.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ]
+}

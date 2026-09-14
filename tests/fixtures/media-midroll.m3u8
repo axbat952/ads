@@ -1,0 +1,19 @@
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:3
+#EXT-X-MEDIA-SEQUENCE:8430
+#EXT-X-TWITCH-LIVE-SEQUENCE:8430
+#EXT-X-TWITCH-ELAPSED-SECS:16860.000
+#EXT-X-TWITCH-TOTAL-SECS:16866.000
+#EXT-X-DATERANGE:ID="stitched-ad-1757760123",CLASS="twitch-stitched-ad",START-DATE="2026-09-13T10:02:03.000Z",DURATION=60.000,X-TV-TWITCH-AD-ROLL-TYPE="MIDROLL",X-TV-TWITCH-AD-POD-LENGTH=2,X-TV-TWITCH-AD-POD-POSITION=0,X-TV-TWITCH-AD-URL="https://example-adserver.invalid/click?a=1,b=2",X-TV-TWITCH-AD-CLICK-TRACKING-URL="https://example-adserver.invalid/track?x=9",X-TV-TWITCH-AD-ADVERTISER-NAME="Une Marque, Inc."
+#EXT-X-DISCONTINUITY
+#EXTINF:2.000,Amazon
+https://video-edge-abc12.par01.abs.hls.ttvnw.net/v1/segment/ad-0001.ts
+#EXTINF:2.000,Amazon
+https://video-edge-abc12.par01.abs.hls.ttvnw.net/v1/segment/ad-0002.ts
+#EXTINF:2.000,
+https://video-edge-abc12.par01.abs.hls.ttvnw.net/v1/segment/ad-0003.ts
+#EXT-X-DISCONTINUITY
+#EXTINF:2.000,live
+https://video-edge-abc12.par01.abs.hls.ttvnw.net/v1/segment/seg-8433.ts
+#EXT-X-TWITCH-PREFETCH:https://video-edge-abc12.par01.abs.hls.ttvnw.net/v1/segment/seg-8434.ts

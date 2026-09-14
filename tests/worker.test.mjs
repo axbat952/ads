@@ -1,0 +1,168 @@
+/**
+ * The hook as it runs inside the player's worker.
+ *
+ * It is given a fake `self`, the only way to check outside a browser that a
+ * playlist comes back transformed and that everything else passes through.
+ *
+ * Two suites encode bugs found in live sessions that the offline tests of the
+ * time could not see, because they described an imagined Twitch: the playlist
+ * URLs, and the ban on writing to the player's message channel.
+ */
+
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+
+import { channelFromUrl, isPlaylist, installHook } from "../src/worker/entry.js";
+import { direct, master, preroll } from "./helpers.mjs";
+
+const ORIGINE = "https://origine.example";
+const URL_MEDIA = `${ORIGINE}/chunked.m3u8`;
+
+// Taken from real traffic.
+const VRAIE_MASTER =
+  "https://usher.ttvnw.net/api/v2/channel/hls/demo_channel.m3u8?acmb=eyJBcHBWZXJzaW9uIjoiYjNhNjEy&allow_source=true";
+const VRAIE_MEDIA = "https://euw32.playlist.ttvnw.net/v1/playlist/CpkHDFrrikny20MB2ApfsgFAnexAMJhqyexdx2lOk3G5d";
+const VRAI_SEGMENT = "https://9f39f2.rufio.hls.live-video.net/v1/segment/CkBm9zcYCL49gp-7L_uTNsxZ";
+
+function fakeScope(routes, { surDiffusion = () => {} } = {}) {
+  const broadcast = [];
+  const listeners = new Map();
+  const scope = {
+    broadcast,
+    listeners,
+    postMessage() {
+      // The worker's channel belongs to the player: writing to it freezes playback.
+      throw new Error("scope.postMessage must NEVER be used");
+    },
+    addEventListener: (type, cb) => listeners.set(type, cb),
+    BroadcastChannel: class {
+      constructor(nom) {
+        this.nom = nom;
+      }
+      postMessage(message) {
+        broadcast.push(message);
+        surDiffusion(message);
+      }
+      addEventListener(type, cb) {
+        listeners.set(`canal:${type}`, cb);
+      }
+      close() {}
+    },
+    fetch: async (input) => {
+      const url = typeof input === "string" ? input : input.url;
+      for (const [reason, body] of routes) {
+        if (url.includes(reason)) return new Response(body, { status: 200 });
+      }
+      return new Response("", { status: 404 });
+    },
+  };
+  return scope;
+}
+
+describe("recognising Twitch URLs (observed live)", () => {
+  it("recognises the master under /api/v2/, not only /api/", () => {
+    assert.equal(isPlaylist(VRAIE_MASTER), true);
+    assert.equal(channelFromUrl(VRAIE_MASTER), "demo_channel");
+    assert.equal(channelFromUrl("https://usher.ttvnw.net/api/channel/hls/Other_Channel.m3u8"), "other_channel");
+  });
+
+  it("recognises a media playlist with NO .m3u8 extension", () => {
+    // The trap: filtering on ".m3u8" let every media playlist through.
+    assert.equal(VRAIE_MEDIA.includes(".m3u8"), false);
+    assert.equal(isPlaylist(VRAIE_MEDIA), true);
+    assert.equal(channelFromUrl(VRAIE_MEDIA), "");
+  });
+
+  it("ignores segments, by far the most frequent requests", () => {
+    assert.equal(isPlaylist(VRAI_SEGMENT), false);
+    assert.equal(isPlaylist("https://assets.twitch.tv/assets/amazon-ivs-wasmworker.min.wasm"), false);
+  });
+});
+
+describe("interception inside the worker", () => {
+  it("passes through anything that is not a playlist", async () => {
+    const scope = fakeScope([["segment", "raw video bytes"]]);
+    const { stop } = installHook(scope);
+    assert.equal(await (await scope.fetch(VRAI_SEGMENT)).text(), "raw video bytes");
+    stop();
+  });
+
+  it("leaves a non-HLS response alone", async () => {
+    // The URL looks like a playlist but the body is not one.
+    const scope = fakeScope([["/v1/playlist/", '{"erreur":"expire"}']]);
+    const { stop } = installHook(scope);
+    assert.equal(await (await scope.fetch(VRAIE_MEDIA)).text(), '{"erreur":"expire"}');
+    stop();
+  });
+
+  it("drops HEVC from the master, recognised by its content", async () => {
+    const scope = fakeScope([["/channel/hls/", master(ORIGINE)]]);
+    const { stop } = installHook(scope);
+    const texte = await (await scope.fetch(VRAIE_MASTER)).text();
+    assert.equal(texte.includes("hvc1"), false);
+    assert.ok(texte.includes("chunked.m3u8"));
+    stop();
+  });
+
+  it("handles a media playlist served from an extension-less URL", async () => {
+    const scope = fakeScope([
+      ["/channel/hls/", master(ORIGINE)],
+      ["gql", JSON.stringify({ data: {} })], // no token: no backup feed
+      ["/v1/playlist/", preroll()],
+    ]);
+    const { stop } = installHook(scope);
+    await scope.fetch(VRAIE_MASTER);
+    const texte = await (await scope.fetch(VRAIE_MEDIA)).text();
+
+    assert.ok(texte.includes("pub-0.ts"), "original playlist served as-is");
+    assert.ok(scope.broadcast.some((m) => m.key === "ADS_Reload"), "a reload was requested");
+    stop();
+  });
+
+  it("never breaks playback if the engine throws", async () => {
+    const scope = fakeScope([["chunked.m3u8", direct()]]);
+    const { blocker, stop } = installHook(scope);
+    blocker.onMedia = () => {
+      throw new Error("boum");
+    };
+    const reponse = await scope.fetch(URL_MEDIA);
+    assert.equal(reponse.status, 200);
+    assert.ok((await reponse.text()).includes("a-0.ts"), "the original body is returned");
+    stop();
+  });
+});
+
+describe("communication channel", () => {
+  it("NEVER writes to the player's message channel", async () => {
+    // `fakeScope.postMessage` throws: this test would have caught the frozen
+    // player, which only showed up in a live session.
+    const scope = fakeScope([["/v1/playlist/", direct()]]);
+    const { stop } = installHook(scope);
+    await scope.fetch(VRAIE_MEDIA);
+    stop();
+  });
+
+  it("broadcasts on a private channel named by the page token", () => {
+    const scope = fakeScope([]);
+    scope.__ADS_REMOVE_TOKEN = "abc123";
+    const { stop } = installHook(scope);
+    assert.ok(scope.broadcast.some((m) => m.key === "ADS_Ready"));
+    stop();
+  });
+
+  it("receives only the channel name, never credentials", () => {
+    // The page's OAuth token no longer travels: backup requests are anonymous,
+    // and a secret has no business on a same-origin channel.
+    const scope = fakeScope([]);
+    const { blocker, stop } = installHook(scope);
+    const listener = scope.listeners.get("canal:message");
+    assert.ok(listener, "the hook listens on the private channel");
+    assert.equal(typeof blocker.majCredentials, "undefined", "no entry point any more");
+
+    listener({ data: { key: "ADS_Channel", channel: "Demo_Channel" } });
+    assert.equal(blocker.stats().channel, "demo_channel");
+
+    listener({ data: { key: "something-else" } }); // must not break anything
+    stop();
+  });
+});

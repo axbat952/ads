@@ -1,0 +1,16 @@
+{
+  "name": "twitch-ads-remove",
+  "private": true,
+  "type": "module",
+  "description": "Chrome extension that removes Twitch SSAI ads by serving an ad-free copy of the same stream.",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "smoke": "node tests/smoke.mjs",
+    "probe": "node tests/probe-candidates.mjs"
+  },
+  "version": "1.0.0",
+  "engines": {
+    "node": ">=22"
+  }
+}
