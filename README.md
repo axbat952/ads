@@ -73,5 +73,3 @@ tests/                offline tests, smoke test, candidate probe
 
 Every module under `src/lib` is pure: all I/O goes through injected functions.
 That is what makes the engine testable without a network or a browser.
-set of usable `playerType` values are all moving targets, and any of them can
-break the extension without warning.

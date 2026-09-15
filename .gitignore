@@ -7,3 +7,6 @@ node_modules/
 # Local archive of the earlier mitmproxy-based prototype, superseded by the
 # extension. Kept out of git on purpose: it has its own toolchain.
 _archive-proxy/
+
+# Release archives built from dist/ and attached to a GitHub release.
+*.zip
