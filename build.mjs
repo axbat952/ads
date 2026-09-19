@@ -20,7 +20,8 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 const SRC = join(ROOT, "src");
 const DIST = join(ROOT, "dist");
 
-const VERSION = "1.0.0";
+/** One source of truth: the manifest version is the package version. */
+const VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
 
 // -- micro bundler ------------------------------------------------------
 
