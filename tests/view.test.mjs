@@ -241,7 +241,7 @@ describe("formatting", () => {
     assert.ok(hidden.detail.includes("muted"), "it states what the user sees");
     assert.ok(hidden.detail.includes("reload"), "and what is attempted in parallel");
 
-    assert.equal(status({ blocking: false }).title, "Monitoring only");
+    assert.equal(status({ blocking: false }).title, "Switched off");
     assert.equal(status({ blocking: true }).title, "No ad");
   });
 

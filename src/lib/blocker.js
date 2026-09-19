@@ -564,6 +564,17 @@ export function createBlocker({
   }
 
   /**
+   * Turn the engine off, or back on, without rebuilding it.
+   *
+   * Off is a genuine pass-through: every playlist is handed back exactly as it
+   * arrived. The switch exists so that a player misbehaving for any reason can
+   * be cleared of suspicion in one click, rather than by uninstalling.
+   */
+  function setEnabled(on) {
+    opt.block = on !== false;
+  }
+
+  /**
    * Channel name supplied by the page.
    *
    * Without it everything depended on having seen the master go by, which the
@@ -647,5 +658,5 @@ export function createBlocker({
     };
   }
 
-  return { onMaster, onMedia, setChannel, stats, options: opt };
+  return { onMaster, onMedia, setChannel, setEnabled, stats, options: opt };
 }

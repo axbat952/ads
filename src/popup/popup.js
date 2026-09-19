@@ -9,6 +9,9 @@ import { breakCountdown, channelTally, lastBreakLine, status, tiles } from "../l
 
 const $ = (id) => document.getElementById(id);
 
+/** Authoritative switch, shared with the service worker and the content script. */
+const ENABLED_KEY = "twitch-ads-remove-enabled";
+
 function renderTiles(stats) {
   const grid = $("grid");
   grid.replaceChildren();
@@ -90,6 +93,30 @@ function renderCountdown(stats) {
   $("countdown-bar").style.width = `${Math.round(countdown.fraction * 100)}%`;
 }
 
+/**
+ * Reflect the switch, and say what a change still needs.
+ *
+ * Switching off applies to open tabs immediately. Switching on cannot: the
+ * player builds its worker once, at page load, so a tab opened while off has
+ * nothing to hook into. Rather than reload the user's tabs behind their back,
+ * the popup says so.
+ */
+function renderSwitch(enabled, changedTo) {
+  $("enabled").checked = enabled;
+  $("enabled-label").textContent = enabled ? "On" : "Off";
+
+  const hint = $("hint");
+  if (changedTo === true) {
+    hint.hidden = false;
+    hint.textContent = "Switched on. Reload the Twitch tab to hook the player.";
+  } else if (changedTo === false) {
+    hint.hidden = false;
+    hint.textContent = "Switched off. The player is untouched from now on.";
+  } else {
+    hint.hidden = true;
+  }
+}
+
 function render({ stats, log }) {
   const { title, detail, colour } = status(stats);
   $("channel").textContent = stats.channel || "—";
@@ -114,6 +141,20 @@ async function refresh() {
   }
 }
 
+$("enabled").addEventListener("change", async (event) => {
+  const enabled = event.target.checked;
+  renderSwitch(enabled, enabled);
+  // Written straight to storage: the service worker and every content script
+  // listen for the change, so there is no message to route and nothing to keep
+  // in step by hand.
+  try {
+    await chrome.storage.local.set({ [ENABLED_KEY]: enabled });
+  } catch {
+    renderSwitch(!enabled);
+  }
+  refresh();
+});
+
 $("log-toggle").addEventListener("click", () => {
   const log = $("log");
   log.hidden = !log.hidden;
@@ -123,6 +164,11 @@ $("reset").addEventListener("click", async () => {
   await chrome.runtime.sendMessage({ source: "ads-remove-popup", type: "reset" });
   refresh();
 });
+
+chrome.storage.local
+  .get(ENABLED_KEY)
+  .then((stored) => renderSwitch(stored[ENABLED_KEY] !== false))
+  .catch(() => {});
 
 refresh();
 setInterval(refresh, 1000);

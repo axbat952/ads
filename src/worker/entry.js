@@ -77,6 +77,10 @@ export function installHook(scope, options = {}) {
   // the counters restart from zero — exactly what aggregation exists to avoid.
   const wid = options.wid || `w${Math.random().toString(36).slice(2, 8)}`;
 
+  // The off switch. False makes the hook a pass-through: no body is read, no
+  // telemetry is sent, and the player gets byte-for-byte what Twitch returned.
+  let enabled = options.enabled !== false;
+
   // Private channel. Never `scope.postMessage`, which belongs to the player. The
   // name carries a per-page token so another Twitch tab does not receive this
   // tab's telemetry.
@@ -125,6 +129,10 @@ export function installHook(scope, options = {}) {
   });
 
   scope.fetch = async function hookedFetch(input, init) {
+    // First line, before anything is read or cloned: switched off must cost
+    // nothing and change nothing.
+    if (!enabled) return originalFetch(input, init);
+
     const url = urlOf(input);
     trace(url);
 
@@ -158,16 +166,23 @@ export function installHook(scope, options = {}) {
     }
   };
 
-  // The only thing received from the page is the channel being watched. No
-  // credentials travel: backup requests are anonymous by construction.
+  // Two things are received from the page: the channel being watched, and the
+  // off switch. No credentials travel: backup requests are anonymous by
+  // construction.
   if (channel) {
     channel.addEventListener("message", (event) => {
       const data = event && event.data;
       if (data && data.key === "ADS_Channel") blocker.setChannel(data.channel);
+      else if (data && data.key === "ADS_Enabled") {
+        enabled = data.enabled !== false;
+        blocker.setEnabled(enabled);
+      }
     });
   }
 
-  const timer = setInterval(() => send({ key: "ADS_Stats", stats: blocker.stats() }), TELEMETRY_MS);
+  const timer = setInterval(() => {
+    if (enabled) send({ key: "ADS_Stats", stats: blocker.stats() });
+  }, options.telemetryMs || TELEMETRY_MS);
 
   send({ key: "ADS_Ready" });
   return {

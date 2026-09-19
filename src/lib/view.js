@@ -37,8 +37,10 @@ export function formatDuration(seconds) {
 export function status(stats) {
   if (stats.blocking === false) {
     return {
-      title: "Monitoring only",
-      detail: "Blocking is off — ads play normally.",
+      title: "Switched off",
+      detail:
+        "The engine is not running and ads play normally. Reload any open Twitch " +
+        "tab to switch back on — the player builds its worker once, at page load.",
       colour: COLOURS.muted,
     };
   }

@@ -55,6 +55,19 @@ avoided, quality served, and a **per-channel tally** of breaks blocked versus le
 through — the number that tells you whether the tool is earning its place on the
 channels you actually watch.
 
+## Switching it off
+
+The panel has an on/off switch. Off is a true pass-through, not a quieter mode:
+the engine stops reading playlists, and on the next page load the player's
+`Worker` is left alone entirely — the extension may as well not be installed.
+
+Switching off applies to open tabs immediately. Switching back on needs a page
+reload, because the player builds its worker once, when the page loads. The
+setting persists, so a tab opened later stays off until you turn it back on.
+
+It is there to make the extension easy to rule out: if a stream misbehaves, one
+click tells you whether this is the cause.
+
 ## Layout
 
 ```

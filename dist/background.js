@@ -13,6 +13,14 @@
 import { aggregate, badgeText, emptyTotals, foldSilent, statusColour } from "./lib/aggregate.js";
 
 const STORAGE_KEY = "twitch-ads-remove-state";
+/**
+ * The off switch, in a key of its own.
+ *
+ * Separate from the state blob so that `storage.onChanged` fires for the
+ * content script only when the switch actually moves, not every time a
+ * counter is written.
+ */
+const ENABLED_KEY = "twitch-ads-remove-enabled";
 const LOG_MAX = 300;
 
 /**
@@ -32,6 +40,7 @@ const state = {
 };
 
 let pendingWrite = null;
+let enabled = true;
 
 /**
  * Re-read persisted state and *merge* it with whatever already arrived.
@@ -43,7 +52,8 @@ let pendingWrite = null;
 async function load() {
   let saved;
   try {
-    const stored = await chrome.storage.local.get(STORAGE_KEY);
+    const stored = await chrome.storage.local.get([STORAGE_KEY, ENABLED_KEY]);
+    enabled = stored[ENABLED_KEY] !== false;
     saved = stored && stored[STORAGE_KEY];
   } catch {
     return; // first run
@@ -72,7 +82,10 @@ function scheduleWrite() {
 
 function currentStats() {
   const reports = Object.entries(state.reports).map(([wid, value]) => ({ wid, ...value }));
-  return aggregate(reports, state.watched, state.totals);
+  // The switch is authoritative over anything the workers last said: when it is
+  // off no worker reports at all, so their final snapshot would otherwise keep
+  // the dot green for ever.
+  return { ...aggregate(reports, state.watched, state.totals), blocking: enabled };
 }
 
 /**
@@ -171,6 +184,14 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     }
   }
   return undefined;
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes[ENABLED_KEY]) return;
+  enabled = changes[ENABLED_KEY].newValue !== false;
+  note("info", enabled ? "switched on" : "switched off");
+  refreshBadge();
+  scheduleWrite();
 });
 
 load().then(refreshBadge);

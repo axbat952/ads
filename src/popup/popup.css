@@ -50,6 +50,75 @@ h1 {
   font-size: 12.5px;
 }
 
+/* Off switch. Pushed to the far right of the header: it is the one control
+   reached for when something looks wrong, so it must be found without reading. */
+.switch {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.track {
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  background: #3a3a40;
+  border: 1px solid var(--border);
+  transition: background 0.15s ease;
+  display: block;
+  position: relative;
+}
+
+.knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #efeff1;
+  transition: transform 0.15s ease;
+}
+
+.switch input:checked + .track {
+  background: var(--accent);
+}
+
+.switch input:checked + .track .knob {
+  transform: translateX(16px);
+}
+
+.switch input:focus-visible + .track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.switch-label {
+  font-size: 12.5px;
+  color: var(--muted);
+  min-width: 22px;
+}
+
+.hint {
+  margin-top: 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
 .status {
   display: flex;
   gap: 12px;

@@ -166,3 +166,71 @@ describe("communication channel", () => {
     stop();
   });
 });
+
+describe("off switch", () => {
+  it("passes everything through when installed off", async () => {
+    const body = preroll();
+    const scope = fakeScope([["/v1/playlist/", body]]);
+    const { stop } = installHook(scope, { enabled: false });
+
+    const response = await scope.fetch(VRAIE_MEDIA);
+    assert.equal(await response.text(), body, "the playlist is handed back untouched");
+    // The preroll is the case that proves it: switched on, this body is the one
+    // the engine cannot strip without emptying, so it always reacts to it.
+    assert.equal(response.headers.get("X-Ads-Remove-Source"), null, "no response of ours");
+    stop();
+  });
+
+  it("stops reading bodies altogether — not merely stops deciding", async () => {
+    let bodiesRead = 0;
+    const scope = fakeScope([]);
+    const original = scope.fetch;
+    scope.fetch = async (input) => {
+      const response = await original(input);
+      return new Proxy(response, {
+        get(target, key) {
+          if (key === "clone") bodiesRead += 1;
+          const value = Reflect.get(target, key);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    };
+    const { stop } = installHook(scope, { enabled: false });
+    await scope.fetch(VRAIE_MEDIA);
+    assert.equal(bodiesRead, 0, "switched off costs nothing");
+    stop();
+  });
+
+  it("is flipped live from the page, both ways", async () => {
+    const scope = fakeScope([["/v1/playlist/", preroll()]]);
+    const { blocker, stop } = installHook(scope);
+    const listener = scope.listeners.get("canal:message");
+
+    listener({ data: { key: "ADS_Enabled", enabled: false } });
+    assert.equal(blocker.stats().blocking, false);
+    const off = await scope.fetch(VRAIE_MEDIA);
+    assert.equal(off.headers.get("X-Ads-Remove-Source"), null, "nothing is substituted");
+
+    listener({ data: { key: "ADS_Enabled", enabled: true } });
+    assert.equal(blocker.stats().blocking, true, "and it comes back");
+    stop();
+  });
+
+  it("reports no telemetry while off", async () => {
+    const scope = fakeScope([]);
+    const { stop } = installHook(scope, { enabled: false, telemetryMs: 5 });
+    scope.broadcast.length = 0;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.deepEqual(scope.broadcast.filter((m) => m.key === "ADS_Stats"), []);
+    stop();
+  });
+
+  it("resumes reporting once switched back on", async () => {
+    const scope = fakeScope([]);
+    const { stop } = installHook(scope, { enabled: false, telemetryMs: 5 });
+    scope.listeners.get("canal:message")({ data: { key: "ADS_Enabled", enabled: true } });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.ok(scope.broadcast.some((m) => m.key === "ADS_Stats"));
+    stop();
+  });
+});

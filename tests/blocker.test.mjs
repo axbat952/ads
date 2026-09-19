@@ -504,6 +504,20 @@ describe("monitoring mode", () => {
     assert.equal(blocker.stats().breaks, 1, "counting continues");
     assert.equal(blocker.stats().blocking, false);
   });
+
+  it("is switched off and back on without rebuilding the engine", async () => {
+    const { blocker } = setup({ clean: ["popout"] });
+    const body = midroll();
+
+    blocker.setEnabled(false);
+    assert.equal(blocker.stats().blocking, false);
+    assert.equal(await blocker.onMedia(URL_MEDIA, body), body, "handed back untouched");
+
+    blocker.setEnabled(true);
+    assert.equal(blocker.stats().blocking, true);
+    const output = await blocker.onMedia(URL_MEDIA, body);
+    assert.equal(output.includes("pub-0.ts"), false, "and it blocks again at once");
+  });
 });
 
 describe("resilience", () => {

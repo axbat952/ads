@@ -12,6 +12,11 @@
         <h1>Twitch Ads Remove</h1>
         <div class="channel">Channel: <b id="channel">—</b></div>
       </div>
+      <label class="switch" for="enabled">
+        <input type="checkbox" id="enabled" checked />
+        <span class="track"><span class="knob"></span></span>
+        <span class="switch-label" id="enabled-label">On</span>
+      </label>
     </header>
 
     <section class="status">
@@ -31,6 +36,8 @@
       </div>
       <div class="bar"><div class="bar-fill" id="countdown-bar"></div></div>
     </div>
+
+    <div class="hint" id="hint" hidden></div>
 
     <div class="grid" id="grid"></div>
 

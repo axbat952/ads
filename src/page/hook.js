@@ -9,6 +9,7 @@
  * 2. Tell the engine which channel is being watched — it is in the address, and
  *    the worker does not always see the master playlist.
  * 3. Reload the player on request, and hide an ad that cannot be replaced.
+ * 4. Obey the off switch, including on the very first line of a page load.
  *
  * No credentials ever leave the page. The player's OAuth token was harvested at
  * one point to pass it to the worker: that was both useless (Twitch then serves
@@ -28,6 +29,28 @@
 
   /** Keeps this page's channel separate from other Twitch tabs. */
   const TOKEN = Math.random().toString(36).slice(2, 10);
+
+  /**
+   * Mirror of the off switch, readable synchronously.
+   *
+   * The authority is `chrome.storage.local`, which this world cannot reach and
+   * which is async anyway. By the time the bridge could answer, the player may
+   * already have built its worker — so the bridge keeps this copy in the page's
+   * own `localStorage`, and the decision to hook is taken here, before anything
+   * else runs. Unset means on: a first install blocks.
+   */
+  const MIRROR_KEY = "twitch-ads-remove-enabled";
+
+  function enabledAtLoad() {
+    try {
+      return window.localStorage.getItem(MIRROR_KEY) !== "0";
+    } catch {
+      return true; // storage denied by a site-data setting: behave as installed
+    }
+  }
+
+  let enabled = enabledAtLoad();
+  let hookInstalled = false;
 
   function toExtension(type, data) {
     window.postMessage({ source: "ads-remove-page", type, ...data }, window.location.origin);
@@ -64,6 +87,8 @@
   const OriginalWorker = window.Worker;
 
   function hookWorker() {
+    if (hookInstalled) return;
+    hookInstalled = true;
     window.Worker = class extends OriginalWorker {
       constructor(url, workerOptions) {
         let target = url;
@@ -375,6 +400,31 @@
     mutedBefore = null;
   }
 
+  // -- 5. the off switch --------------------------------------------------
+
+  /**
+   * Apply a switch change to a page that is already open.
+   *
+   * Switching off takes effect at once: the worker stops reading playlists and
+   * any overlay is cleared. What cannot be undone live is the `Worker` subclass
+   * — it was installed before the player existed, and removing it now would not
+   * affect the worker already running. Switching back on therefore needs a
+   * reload, which is what the popup says.
+   */
+  function applySwitch(next) {
+    if (next === enabled) return;
+    enabled = next;
+
+    if (channel) channel.postMessage({ key: "ADS_Enabled", enabled });
+    if (!enabled) revealPlayer();
+
+    if (enabled && !hookInstalled) {
+      console.info(`${TAG} switched on — reload the page to hook the player`);
+      return;
+    }
+    console.info(`${TAG} switched ${enabled ? "on" : "off"}`);
+  }
+
   // -- commands from the extension ----------------------------------------
 
   window.addEventListener("message", (event) => {
@@ -382,11 +432,20 @@
     const data = event.data;
     if (!data || data.source !== "ads-remove-extension") return;
     if (data.type === "reload") reloadPlayer();
+    else if (data.type === "setEnabled") applySwitch(data.enabled !== false);
   });
 
+  // The channel stays open even when off, so the switch can be flipped back
+  // without reloading, and so a worker that survives the change hears about it.
   openChannel();
-  hookWorker();
   watchAddress();
+
+  if (!enabled) {
+    console.info(`${TAG} switched off — the player is left untouched`);
+    return;
+  }
+
+  hookWorker();
   broadcastChannelName();
   console.info(`${TAG} hook installed`);
 })();
