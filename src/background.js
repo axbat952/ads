@@ -11,6 +11,7 @@
  */
 
 import { aggregate, badgeText, emptyTotals, foldSilent, statusColour } from "./lib/aggregate.js";
+import { emptyRanking, orderLabels, pruneRanking, recordOutcomes, summary } from "./lib/ranking.js";
 
 const STORAGE_KEY = "twitch-ads-remove-state";
 /**
@@ -37,7 +38,34 @@ const state = {
   reports: {}, // key -> {receivedAt, stats} — live workers only
   totals: emptyTotals(), // running total of workers that went away
   log: [], // {at, level, message}
+  /**
+   * What each backup source is worth, per channel.
+   *
+   * It lives here rather than in the player's worker because that worker is
+   * destroyed on every reload — which is precisely when the lesson of the
+   * previous break would have been useful.
+   */
+  ranking: emptyRanking(),
+  /**
+   * Every backup source the engine knows about, in its own order.
+   *
+   * Learned from the searches themselves rather than imported: the engine
+   * reports the verdict of every candidate it tried, so the list arrives on its
+   * own, and this file does not have to be kept in step with `stream.js`.
+   */
+  labels: [],
 };
+
+/** Merge newly seen labels in, keeping the order the engine uses. */
+function learnLabels(outcomes) {
+  const seen = new Set(state.labels);
+  for (const [label] of outcomes) {
+    if (typeof label === "string" && label && !seen.has(label)) {
+      seen.add(label);
+      state.labels.push(label);
+    }
+  }
+}
 
 let pendingWrite = null;
 let enabled = true;
@@ -70,6 +98,20 @@ async function load() {
   }
 
   state.log = [...(saved.log || []), ...state.log].slice(-LOG_MAX);
+  state.ranking = pruneRanking({ ...(saved.ranking || {}), ...state.ranking }, Date.now() / 1000);
+  learnLabels((saved.labels || []).map((label) => [label]));
+}
+
+/**
+ * Learned order for a channel, or nothing when there is nothing to say.
+ *
+ * Returning nothing leaves the engine on its own hand-picked order, which is
+ * the right answer before any evidence exists.
+ */
+function orderFor(channel) {
+  const name = String(channel || "").toLowerCase();
+  if (!name || !state.labels.length || !Object.keys(state.ranking).length) return null;
+  return orderLabels(state.labels, state.ranking, name);
 }
 
 function scheduleWrite() {
@@ -153,8 +195,22 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       foldSilentWorkers();
       refreshBadge();
       scheduleWrite();
+      // The reply carries the learned order back to the page. Answering on the
+      // report the page already sends avoids `chrome.tabs` and the host
+      // permission it would require.
+      respond({ order: orderFor(message.stats.channel) || [] });
+      return true;
     } else if (message.type === "event" && message.event) {
       const event = message.event;
+      if (event.type === "search" && Array.isArray(event.outcomes) && event.outcomes.length) {
+        learnLabels(event.outcomes);
+        state.ranking = recordOutcomes(
+          state.ranking,
+          event.channel,
+          event.outcomes,
+          Date.now() / 1000,
+        );
+      }
       if (event.type === "log") note(event.level || "info", event.message || "");
       else if (event.type === "break") note("warning", `ad break ${event.roll || "?"} ${Math.round(event.duration || 0)}s`);
       else if (event.type === "reloadPerformed") note("warning", `player reload: ${event.reason} (${event.how})`);
@@ -168,7 +224,12 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 
   if (message.source === "ads-remove-popup") {
     if (message.type === "stats") {
-      respond({ stats: currentStats(), log: state.log.slice(-120) });
+      const stats = currentStats();
+      respond({
+        stats,
+        log: state.log.slice(-120),
+        sources: summary(state.ranking, stats.channel),
+      });
       return true;
     }
     if (message.type === "reset") {
@@ -177,6 +238,8 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       state.reports = {};
       state.totals = emptyTotals();
       state.log = [];
+      state.ranking = emptyRanking();
+      state.labels = [];
       refreshBadge();
       scheduleWrite();
       respond({ ok: true });

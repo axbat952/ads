@@ -550,3 +550,44 @@ describe("resilience", () => {
     assert.ok(fake.calls.length > afterFirst, "the guard delay has elapsed");
   });
 });
+
+describe("learned order of backup sources", () => {
+  it("tries the sources in the order it was taught", async () => {
+    // `popout/web` comes first in the hand-picked list and both are clean, so
+    // without the ranking it wins. The whole point of the feature is that
+    // measurement overrules the hand-picked order.
+    const { blocker } = setup({ clean: ["popout", "embed"] });
+    blocker.setRanking(["embed/web", "popout/web"]);
+    await blocker.onMedia(URL_MEDIA, preroll());
+    assert.deepEqual(blocker.stats().backupFeeds, ["embed/web"]);
+  });
+
+  it("falls back to the hand-picked order when taught nothing", async () => {
+    const { blocker } = setup({ clean: ["popout", "embed"] });
+    await blocker.onMedia(URL_MEDIA, preroll());
+    assert.deepEqual(blocker.stats().backupFeeds, ["popout/web"]);
+  });
+
+  it("ignores a repeat of the order it already has", () => {
+    const { blocker } = setup({ clean: ["popout"] });
+    assert.equal(blocker.setRanking(["embed/web"]), true);
+    assert.equal(blocker.setRanking(["embed/web"]), false, "nothing to do");
+    assert.equal(blocker.setRanking(["popout/web"]), true);
+  });
+
+  it("survives an order that is empty, wrong, or full of rubbish", async () => {
+    const { blocker } = setup({ clean: ["popout"] });
+    blocker.setRanking(null);
+    blocker.setRanking([1, null, {}, "unknown/source"]);
+    await blocker.onMedia(URL_MEDIA, preroll());
+    assert.deepEqual(blocker.stats().backupFeeds, ["popout/web"], "no candidate lost");
+  });
+
+  it("reports the verdict of every candidate for the ranking to learn from", async () => {
+    const { blocker, events } = setup({ clean: ["popout"] });
+    await blocker.onMedia(URL_MEDIA, preroll());
+    const search = events.find((e) => e.type === "search");
+    assert.ok(search.outcomes.length > 1, "not just the winner");
+    assert.ok(search.outcomes.every(([label, ok]) => typeof label === "string" && typeof ok === "boolean"));
+  });
+});

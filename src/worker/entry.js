@@ -166,9 +166,9 @@ export function installHook(scope, options = {}) {
     }
   };
 
-  // Two things are received from the page: the channel being watched, and the
-  // off switch. No credentials travel: backup requests are anonymous by
-  // construction.
+  // Three things are received from the page: the channel being watched, the off
+  // switch, and the learned order of the backup sources. No credentials travel:
+  // backup requests are anonymous by construction.
   if (channel) {
     channel.addEventListener("message", (event) => {
       const data = event && event.data;
@@ -176,7 +176,7 @@ export function installHook(scope, options = {}) {
       else if (data && data.key === "ADS_Enabled") {
         enabled = data.enabled !== false;
         blocker.setEnabled(enabled);
-      }
+      } else if (data && data.key === "ADS_Ranking") blocker.setRanking(data.order);
     });
   }
 

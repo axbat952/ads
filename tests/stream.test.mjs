@@ -156,6 +156,25 @@ describe("findCleanStream", () => {
     }
   });
 
+  it("reports the verdict of EVERY candidate, winner included", async () => {
+    // `attempts` stops at the winner, which is right for explaining a failure
+    // and wrong for scoring: the ranking would only ever see the candidates
+    // that come before the first success.
+    const fake = fetcher({ clean: ["popout", "embed"], cleanBody: direct("popout") });
+    const result = await findCleanStream("demo_channel", fake);
+
+    assert.equal(result.outcomes.length, BACKUP_CANDIDATES.length, "one line per candidate");
+
+    const labels = result.outcomes.map(([label]) => label);
+    const usable = result.outcomes.filter(([, ok]) => ok).map(([label]) => label);
+    assert.ok(usable.includes("popout/web"), "the winner is recorded as usable");
+    assert.ok(
+      usable.some((label) => labels.indexOf(label) > labels.indexOf("popout/web")),
+      "and so is a candidate that would have worked but came later",
+    );
+    assert.ok(result.attempts.length < result.outcomes.length, "attempts still stops early");
+  });
+
   it("never throws, even when the network blows up", async () => {
     const result = await findCleanStream("demo_channel", async () => {
       throw new Error("reseau coupe");

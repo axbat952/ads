@@ -205,6 +205,7 @@ export function build() {
   copy("page/bridge.js");
   copy("background.js");
   copy("lib/aggregate.js");
+  copy("lib/ranking.js");
   copy("lib/view.js");
   copy("popup/popup.html");
   copy("popup/popup.css");

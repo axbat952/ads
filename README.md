@@ -55,6 +55,28 @@ avoided, quality served, and a **per-channel tally** of breaks blocked versus le
 through — the number that tells you whether the tool is earning its place on the
 channels you actually watch.
 
+## It learns which sources work
+
+The candidate list is a measurement taken at one point in time, and Twitch
+moves: a `playerType` that returns a clean feed today can be stitched
+permanently next month. A fixed order means the dead ones keep being asked
+first, for ever.
+
+Every search already reports, for each candidate, whether it came back usable.
+That verdict used to be discarded — it lived in the player's worker, which is
+destroyed on every reload. It is now kept, per channel, and turned into an
+order, so the sources that actually work on the channels you watch are tried
+first.
+
+Two properties keep it safe. A candidate never tried is never buried: it ranks
+as an unknown, above the proven failures and below the proven successes, so a
+source that starts working again is found. And the evidence expires — counts are
+bounded, so a month of old verdicts cannot outvote what happened this week.
+
+A channel never searched before starts from what was learned everywhere else,
+and its own evidence overrides that within a few breaks. The panel shows what
+was learned about the channel you are on.
+
 ## Switching it off
 
 The panel has an on/off switch. Off is a true pass-through, not a quieter mode:
@@ -75,11 +97,12 @@ src/lib/hls.js        HLS parsing, ad detection, segment stripping (pure)
 src/lib/stream.js     obtaining an ad-free feed via an alternative playerType (pure)
 src/lib/blocker.js    decision engine: swap, strip, or let through and hide (pure)
 src/lib/aggregate.js  telemetry across player workers, surviving reloads (pure)
+src/lib/ranking.js    which backup sources work, learned per channel (pure)
 src/lib/view.js       popup formatting (pure)
 src/worker/entry.js   fetch interception inside the player's worker
 src/page/hook.js      MAIN-world hook: Worker, player reload, ad overlay
 src/page/bridge.js    ISOLATED-world relay to the extension
-src/background.js     service worker: session totals, badge, persistence
+src/background.js     service worker: totals, badge, persistence, the ranking
 build.mjs             dependency-free build: bundle, manifest, icons
 tests/                offline tests, smoke test, candidate probe
 ```

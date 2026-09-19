@@ -165,6 +165,23 @@ describe("communication channel", () => {
     listener({ data: { key: "something-else" } }); // must not break anything
     stop();
   });
+
+  it("routes the learned order through to the engine", () => {
+    // Routing is where this kind of feature dies: the value is computed in the
+    // service worker and has four hops to cross before it means anything.
+    const scope = fakeScope([]);
+    const { blocker, stop } = installHook(scope);
+    let taught = null;
+    blocker.setRanking = (order) => {
+      taught = order;
+    };
+
+    scope.listeners.get("canal:message")({
+      data: { key: "ADS_Ranking", order: ["embed/web", "popout/web"] },
+    });
+    assert.deepEqual(taught, ["embed/web", "popout/web"]);
+    stop();
+  });
 });
 
 describe("off switch", () => {

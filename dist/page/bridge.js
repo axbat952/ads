@@ -38,12 +38,30 @@ window.addEventListener("message", (event) => {
   if (event.source !== window) return;
   const data = event.data;
   if (!data || data.source !== "ads-remove-page") return;
+
+  let reply;
   try {
-    chrome.runtime.sendMessage({ ...data, source: "ads-remove-bridge" });
+    reply = chrome.runtime.sendMessage({ ...data, source: "ads-remove-bridge" });
   } catch {
     // Extension reloaded mid-session: the context is invalidated and there is
     // nothing to repair from the page. Blocking continues; only telemetry stops.
+    return;
   }
+
+  // The telemetry round trip carries the learned order of the backup sources
+  // back down. Riding on a message the page already sends every two seconds
+  // avoids `chrome.tabs`, which would mean asking for a host permission.
+  if (!reply || typeof reply.then !== "function") return;
+  reply
+    .then((answer) => {
+      if (answer && Array.isArray(answer.order)) {
+        toPage({ source: "ads-remove-extension", type: "ranking", order: answer.order });
+      }
+    })
+    .catch(() => {
+      // No listener answered: nothing was learned yet, or the service worker
+      // was asleep. The next report asks again.
+    });
 });
 
 chrome.runtime.onMessage.addListener((message) => {

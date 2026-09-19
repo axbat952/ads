@@ -56,6 +56,34 @@ describe("built extension", () => {
     }
   });
 
+  it("ships every module the built code imports", () => {
+    // The service worker and the popup load ES modules that the manifest never
+    // names, so the copy list in `build.mjs` is the only thing keeping them
+    // present. Forgetting one breaks the extension at load with nothing to
+    // catch it: adding `lib/ranking.js` nearly went out that way.
+    build();
+    const entries = ["background.js", "popup/popup.js"];
+    const seen = new Set();
+
+    const walk = (file) => {
+      if (seen.has(file)) return;
+      seen.add(file);
+      const source = readFileSync(join(DIST, file), "utf8");
+      const from = dirname(file);
+      for (const match of source.matchAll(/from\s+["'](\.[^"']+)["']/g)) {
+        const target = join(from, match[1]).split("\\").join("/");
+        assert.doesNotThrow(
+          () => readFileSync(join(DIST, target)),
+          `${file} imports ${match[1]}, absent from dist`,
+        );
+        walk(target);
+      }
+    };
+
+    for (const entry of entries) walk(entry);
+    assert.ok(seen.has("lib/ranking.js"), "the ranking really is reachable from the service worker");
+  });
+
   it("injects the hook into the MAIN world as early as possible", () => {
     const manifestJson = JSON.parse(lire("manifest.json"));
     const mainWorld = manifestJson.content_scripts.find((c) => c.world === "MAIN");

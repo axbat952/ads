@@ -143,6 +143,8 @@
       console.info(`${TAG} engine installed in the player worker`);
       toExtension("ready", {});
       announcedChannels.clear();
+      // A reload builds a new worker, which knows none of this: say it again.
+      announcedOrder = "";
       broadcastChannelName();
       return;
     }
@@ -425,6 +427,22 @@
     console.info(`${TAG} switched ${enabled ? "on" : "off"}`);
   }
 
+  /**
+   * Pass the learned order of backup sources down to the worker.
+   *
+   * It arrives with every telemetry round trip, so it is compared before being
+   * forwarded: the order changes a few times an hour at most, and there is no
+   * reason to wake the worker twice a second for an identical list.
+   */
+  let announcedOrder = "";
+  function applyRanking(list) {
+    const order = Array.isArray(list) ? list.filter((l) => typeof l === "string") : [];
+    const signature = order.join("|");
+    if (!channel || signature === announcedOrder) return;
+    announcedOrder = signature;
+    channel.postMessage({ key: "ADS_Ranking", order });
+  }
+
   // -- commands from the extension ----------------------------------------
 
   window.addEventListener("message", (event) => {
@@ -433,6 +451,7 @@
     if (!data || data.source !== "ads-remove-extension") return;
     if (data.type === "reload") reloadPlayer();
     else if (data.type === "setEnabled") applySwitch(data.enabled !== false);
+    else if (data.type === "ranking") applyRanking(data.order);
   });
 
   // The channel stays open even when off, so the switch can be flipped back

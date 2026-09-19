@@ -36,6 +36,7 @@ import {
   candidateLabel,
   cleanStreamFromMaster,
   findCleanStream,
+  orderCandidates,
 } from "./stream.js";
 
 /** How long a backup feed stays valid, in seconds. */
@@ -188,8 +189,27 @@ export function createBlocker({
     onEvent({ type: "log", level, message });
   }
 
+  /**
+   * Learned order of the backup sources, supplied by the service worker.
+   *
+   * It is advice, not a filter: nothing is ever removed from the list, only
+   * moved. A candidate the ranking has never heard of stays where the
+   * hand-picked list put it.
+   */
+  let order = [];
+
+  function setRanking(labels) {
+    const next = Array.isArray(labels) ? labels.filter((l) => typeof l === "string") : [];
+    if (next.join("|") === order.join("|")) return false;
+    order = next;
+    return true;
+  }
+
   function candidates() {
-    return opt.lowQuality ? [...BACKUP_CANDIDATES, ...LOW_QUALITY_CANDIDATES] : BACKUP_CANDIDATES;
+    const list = opt.lowQuality
+      ? [...BACKUP_CANDIDATES, ...LOW_QUALITY_CANDIDATES]
+      : BACKUP_CANDIDATES;
+    return orderCandidates(list, order);
   }
 
   /** Candidates still worth trying for this URL during the current break. */
@@ -368,7 +388,13 @@ export function createBlocker({
       const wait = backoffAfter(state.failures);
       state.blockedUntil = now() + wait;
       log("warning", `no clean feed for ${channel} (retry in ${wait}s): ${result.attempts.map(([l, r]) => `${l} (${r})`).join(", ")}`);
-      onEvent({ type: "search", channel, found: false, attempts: result.attempts });
+      onEvent({
+        type: "search",
+        channel,
+        found: false,
+        attempts: result.attempts,
+        outcomes: result.outcomes,
+      });
       return null;
     }
 
@@ -382,7 +408,14 @@ export function createBlocker({
       quality: feed.quality,
     };
     log("info", `clean feed found via ${feed.playerType} in ${counters.lastSearchMs}ms (${feed.quality})`);
-    onEvent({ type: "search", channel, found: true, label: feed.playerType, quality: feed.quality });
+    onEvent({
+      type: "search",
+      channel,
+      found: true,
+      label: feed.playerType,
+      quality: feed.quality,
+      outcomes: result.outcomes,
+    });
     return feed;
   }
 
@@ -658,5 +691,5 @@ export function createBlocker({
     };
   }
 
-  return { onMaster, onMedia, setChannel, setEnabled, stats, options: opt };
+  return { onMaster, onMedia, setChannel, setEnabled, setRanking, stats, options: opt };
 }

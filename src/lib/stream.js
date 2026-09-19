@@ -73,6 +73,26 @@ export function candidateLabel(candidate) {
   return `${candidate.playerType}/${candidate.platform}`;
 }
 
+/**
+ * Reorder candidates according to a learned order of labels.
+ *
+ * Advice, not a filter: a label missing from the order keeps its place at the
+ * end rather than being dropped, so an order that has gone stale against a
+ * newer candidate list can never make a candidate unreachable.
+ */
+export function orderCandidates(candidates, order) {
+  if (!Array.isArray(order) || !order.length) return candidates;
+  const rank = new Map(order.map((label, index) => [label, index]));
+  const place = (candidate) => {
+    const found = rank.get(candidateLabel(candidate));
+    return found === undefined ? Number.MAX_SAFE_INTEGER : found;
+  };
+  return candidates
+    .map((candidate, index) => ({ candidate, index }))
+    .sort((a, b) => place(a.candidate) - place(b.candidate) || a.index - b.index)
+    .map((entry) => entry.candidate);
+}
+
 /** Body of the GQL `PlaybackAccessToken` request. */
 export function tokenPayload(channel, playerType, platform = "web") {
   return {
@@ -227,7 +247,10 @@ async function tryCandidate(candidate, channel, hdrs, fetcher, wanted) {
  * stripped playlist. The result is still the *first clean candidate in list
  * order*, so parallelism does not degrade the choice.
  *
- * Never rejects: every failure is recorded in `attempts`.
+ * Never rejects: every failure is recorded in `attempts`, and the verdict of
+ * every candidate — winner included, and those that would also have worked — in
+ * `outcomes`, which is what the ranking learns from. `attempts` stops at the
+ * winner on purpose: it exists to explain a failure, not to score.
  */
 export async function findCleanStream(
   channel,
@@ -235,13 +258,17 @@ export async function findCleanStream(
   wanted = null,
   candidates = BACKUP_CANDIDATES,
 ) {
-  const result = { stream: null, attempts: [] };
+  const result = { stream: null, attempts: [], outcomes: [] };
   if (!candidates.length) return result;
   const hdrs = headers();
 
   const verdicts = await Promise.all(
     candidates.map((c) => tryCandidate(c, channel, hdrs, fetcher, wanted)),
   );
+
+  for (const verdict of verdicts) {
+    result.outcomes.push([candidateLabel(verdict.candidate), Boolean(verdict.stream)]);
+  }
 
   for (const verdict of verdicts) {
     if (verdict.stream) {
