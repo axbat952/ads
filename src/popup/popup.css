@@ -300,3 +300,11 @@ button:hover {
   background: var(--accent);
   transition: width 0.5s linear;
 }
+
+.version {
+  margin-top: 12px;
+  text-align: right;
+  color: #6b6b74;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}

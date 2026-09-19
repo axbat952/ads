@@ -20,7 +20,6 @@ import {
   pruneRanking,
   recordOutcomes,
   scoreFor,
-  summary,
 } from "../src/lib/ranking.js";
 import { BACKUP_CANDIDATES, candidateLabel, orderCandidates } from "../src/lib/stream.js";
 
@@ -182,21 +181,5 @@ describe("bounds", () => {
     assert.equal(Object.keys(kept).length, MAX_CHANNELS + 1, "channels plus the global bucket");
     assert.equal(kept.c0, undefined);
     assert.ok(kept[`c${MAX_CHANNELS + 4}`]);
-  });
-});
-
-describe("what the popup shows", () => {
-  it("reports only sources actually tried on this channel, best first", () => {
-    let ranking = repeat(emptyRanking(), "demo", [["embed/web", true]], 3, 10);
-    ranking = repeat(ranking, "demo", [["popout/web", false]], 2, 10);
-    assert.deepEqual(summary(ranking, "demo"), [
-      ["embed/web", 3, 3],
-      ["popout/web", 0, 2],
-    ]);
-  });
-
-  it("says nothing about a channel it has never searched", () => {
-    assert.deepEqual(summary(emptyRanking(), "demo"), []);
-    assert.deepEqual(summary(recordOutcomes(emptyRanking(), "other", [["a", true]], 1), "demo"), []);
   });
 });

@@ -74,8 +74,8 @@ source that starts working again is found. And the evidence expires — counts a
 bounded, so a month of old verdicts cannot outvote what happened this week.
 
 A channel never searched before starts from what was learned everywhere else,
-and its own evidence overrides that within a few breaks. The panel shows what
-was learned about the channel you are on.
+and its own evidence overrides that within a few breaks. It runs on its own;
+there is nothing to configure and nothing to read.
 
 ## Switching it off
 

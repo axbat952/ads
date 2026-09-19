@@ -73,53 +73,6 @@ function renderTally(stats) {
   host.append(box);
 }
 
-/**
- * What the extension has learned about this channel's backup sources.
- *
- * Worth showing rather than hiding: the ordering is the one part of the engine
- * that changes behaviour on its own, and a silent self-tuning mechanism is one
- * you cannot tell apart from a broken one.
- */
-function renderSources(sources) {
-  const host = $("sources");
-  host.replaceChildren();
-  if (!sources || !sources.length) return;
-
-  const box = document.createElement("div");
-  box.className = "tally";
-  const title = document.createElement("div");
-  title.className = "tally-title";
-  title.textContent = "Backup sources tried here";
-
-  const table = document.createElement("table");
-  const head = document.createElement("tr");
-  for (const name of ["source", "clean", "tried"]) {
-    const th = document.createElement("th");
-    th.textContent = name;
-    head.append(th);
-  }
-  table.append(head);
-
-  for (const [label, ok, total] of sources) {
-    const tr = document.createElement("tr");
-    const cells = [
-      [label, ""],
-      [String(ok), ok ? "#00b686" : "#adadb8"],
-      [String(total), "#adadb8"],
-    ];
-    for (const [text, colour] of cells) {
-      const td = document.createElement("td");
-      td.textContent = text;
-      if (colour) td.style.color = colour;
-      tr.append(td);
-    }
-    table.append(tr);
-  }
-
-  box.append(title, table);
-  host.append(box);
-}
-
 function renderLog(log) {
   const time = (at) => new Date(at * 1000).toLocaleTimeString("en-GB");
   $("log").textContent = log.length
@@ -164,7 +117,7 @@ function renderSwitch(enabled, changedTo) {
   }
 }
 
-function render({ stats, log, sources }) {
+function render({ stats, log }) {
   const { title, detail, colour } = status(stats);
   $("channel").textContent = stats.channel || "—";
   $("status-title").textContent = title;
@@ -175,7 +128,6 @@ function render({ stats, log, sources }) {
   renderCountdown(stats);
   renderTiles(stats);
   renderTally(stats);
-  renderSources(sources);
   $("last-break").textContent = lastBreakLine(stats);
   renderLog(log || []);
 }
@@ -212,6 +164,10 @@ $("reset").addEventListener("click", async () => {
   await chrome.runtime.sendMessage({ source: "ads-remove-popup", type: "reset" });
   refresh();
 });
+
+// The version the browser actually loaded, which is the one that matters when
+// reporting a problem: an unpacked extension is updated by hand.
+$("version").textContent = `v${chrome.runtime.getManifest().version}`;
 
 chrome.storage.local
   .get(ENABLED_KEY)

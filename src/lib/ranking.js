@@ -136,17 +136,6 @@ export function orderLabels(labels, ranking, channel) {
     .map((entry) => entry.label);
 }
 
-/** What was learned about a channel, best first, for display. */
-export function summary(ranking, channel, limit = 5) {
-  const name = String(channel || "").toLowerCase();
-  const own = (ranking[name] || { sources: {} }).sources;
-  const labels = Object.keys(own);
-  if (!labels.length) return [];
-  return orderLabels(labels, ranking, name)
-    .slice(0, limit)
-    .map((label) => [label, own[label].ok, own[label].ok + own[label].ko]);
-}
-
 /** Forget stale and excess channels. The global bucket is never dropped. */
 export function pruneRanking(ranking, at = 0) {
   const entries = Object.entries(ranking).filter(([channel]) => channel !== ANY_CHANNEL);

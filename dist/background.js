@@ -11,7 +11,7 @@
  */
 
 import { aggregate, badgeText, emptyTotals, foldSilent, statusColour } from "./lib/aggregate.js";
-import { emptyRanking, orderLabels, pruneRanking, recordOutcomes, summary } from "./lib/ranking.js";
+import { emptyRanking, orderLabels, pruneRanking, recordOutcomes } from "./lib/ranking.js";
 
 const STORAGE_KEY = "twitch-ads-remove-state";
 /**
@@ -233,12 +233,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 
   if (message.source === "ads-remove-popup") {
     if (message.type === "stats") {
-      const stats = currentStats();
-      respond({
-        stats,
-        log: state.log.slice(-120),
-        sources: summary(state.ranking, stats.channel),
-      });
+      respond({ stats: currentStats(), log: state.log.slice(-120) });
       return true;
     }
     if (message.type === "reset") {
