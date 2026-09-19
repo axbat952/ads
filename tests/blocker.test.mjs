@@ -591,3 +591,85 @@ describe("learned order of backup sources", () => {
     assert.ok(search.outcomes.every(([label, ok]) => typeof label === "string" && typeof ok === "boolean"));
   });
 });
+
+describe("segment numbering across a break", () => {
+  /**
+   * A sliding window walking through a midroll, as the player really polls.
+   *
+   * HLS identifies a segment by `#EXT-X-MEDIA-SEQUENCE` plus its position.
+   * Dropping ads from the head of the playlist renames every segment after
+   * them: the player is handed the same segment under a new number on each
+   * poll, re-downloads it, and the picture stops advancing until the break
+   * ends — at which point only a manual refresh recovers it.
+   */
+  const WINDOW = 5;
+  const FIRST_AD = 200;
+  const LAST_AD = 207;
+  const isAd = (n) => n >= FIRST_AD && n <= LAST_AD;
+
+  function poll(first) {
+    const out = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:3", `#EXT-X-MEDIA-SEQUENCE:${first}`];
+    const numbers = [];
+    for (let i = first; i < first + WINDOW; i += 1) numbers.push(i);
+    if (numbers.some(isAd)) {
+      out.push(
+        '#EXT-X-DATERANGE:ID="stitched-ad-1",CLASS="twitch-stitched-ad",' +
+          'START-DATE="2026-09-19T17:00:00.000Z",DURATION=16.0,' +
+          'X-TV-TWITCH-AD-ROLL-TYPE="MIDROLL",X-TV-TWITCH-AD-POD-LENGTH="1"',
+      );
+    }
+    for (const n of numbers) {
+      out.push(`#EXTINF:2.000,${isAd(n) ? "Amazon|1" : "live"}`, `https://cdn.example/seg-${n}.ts`);
+    }
+    return out.join("\n") + "\n";
+  }
+
+  /** Each segment paired with the number the player will file it under. */
+  function asServed(body) {
+    const rows = [];
+    const all = body.replace(/\r/g, "").split("\n");
+    const start = readMediaSequence(body);
+    let index = 0;
+    for (let i = 0; i < all.length; i += 1) {
+      if (!all[i].startsWith("#EXTINF:")) continue;
+      rows.push([start + index, (all[i + 1] || "").trim()]);
+      index += 1;
+    }
+    return rows;
+  }
+
+  it("never serves the same segment under two different numbers", async () => {
+    const blocker = createBlocker({
+      // No backup feed reachable: this is the stripping path.
+      fetcher: async () => ({ status: 500, text: "" }),
+      options: { swap: false },
+    });
+    blocker.setChannel("demo_channel");
+
+    const given = new Map();
+    for (let first = 196; first <= 214; first += 1) {
+      for (const [number, url] of asServed(await blocker.onMedia(URL_MEDIA, poll(first)))) {
+        if (given.has(url)) {
+          assert.equal(given.get(url), number, `${url} changed number at poll ${first}`);
+        }
+        given.set(url, number);
+      }
+    }
+  });
+
+  it("never serves a segment under a number the player has already passed", async () => {
+    const blocker = createBlocker({
+      fetcher: async () => ({ status: 500, text: "" }),
+      options: { swap: false },
+    });
+    blocker.setChannel("demo_channel");
+
+    let highest = -1;
+    for (let first = 196; first <= 214; first += 1) {
+      const rows = asServed(await blocker.onMedia(URL_MEDIA, poll(first)));
+      if (!rows.length) continue;
+      assert.ok(rows[0][0] >= highest - WINDOW, `poll ${first} went backwards to ${rows[0][0]}`);
+      highest = Math.max(highest, rows[rows.length - 1][0]);
+    }
+  });
+});

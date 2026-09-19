@@ -20,6 +20,7 @@ import {
   parseMedia,
   parseVariants,
   qualityLabel,
+  readMediaSequence,
   rollType,
   stripAds,
   stripHevcVariants,
@@ -172,6 +173,34 @@ describe("stripAds", () => {
 
   it("disables prefetch during a break", () => {
     assert.equal(stripAds(MIDROLL).text.includes("#EXT-X-TWITCH-PREFETCH"), false);
+  });
+
+  it("raises the media sequence by the segments dropped from the head", () => {
+    // HLS numbers the first segment of the playlist and the rest by position.
+    // Dropping ads from the head renames everything after them: the player
+    // receives the same segment under a new number on each poll, re-downloads
+    // it, and the picture stops advancing until the break ends.
+    const body = lire("media-midroll.m3u8");
+    const before = readMediaSequence(body);
+    const { text, removedBefore } = stripAds(body);
+
+    assert.ok(removedBefore > 0, "the midroll starts with its ads");
+    assert.equal(readMediaSequence(text), before + removedBefore);
+  });
+
+  it("leaves the sequence alone when only the tail was dropped", () => {
+    const body = [
+      "#EXTM3U",
+      "#EXT-X-MEDIA-SEQUENCE:500",
+      "#EXTINF:2.000,live",
+      "https://cdn.example/live-0.ts",
+      "#EXTINF:2.000,Amazon|1",
+      "https://cdn.example/pub-0.ts",
+    ].join("\n");
+    const { text, removed, removedBefore } = stripAds(body);
+    assert.equal(removed, 1);
+    assert.equal(removedBefore, 0, "nothing was dropped before the first kept segment");
+    assert.equal(readMediaSequence(text), 500);
   });
 
   it("neutralises tracking URLs", () => {

@@ -236,6 +236,17 @@ export function stripAds(text) {
   const all = lines(text);
   const out = [];
   let removed = 0;
+  /**
+   * Ad segments dropped *before* the first one kept.
+   *
+   * `#EXT-X-MEDIA-SEQUENCE` numbers the first segment of the playlist, and the
+   * rest follow by position. Dropping segments from the head therefore renames
+   * every segment after them unless the sequence is raised to match — the
+   * player would receive the same segment under a new number on each poll,
+   * re-download it, and never see the timeline advance.
+   */
+  let removedBefore = 0;
+  let kept = 0;
   let skipNextUrl = false;
   const duringBreak = hasAdMarkers(text);
 
@@ -250,9 +261,11 @@ export function stripAds(text) {
       const match = EXTINF_RE.exec(line);
       if (match && match[2].trim().toLowerCase() !== LIVE_TITLE) {
         removed += 1;
+        if (kept === 0) removedBefore += 1;
         skipNextUrl = true;
         continue;
       }
+      kept += 1;
     }
 
     // A prefetched segment cannot be classified, so low-latency prefetch is
@@ -265,7 +278,11 @@ export function stripAds(text) {
     out.push(line);
   }
 
-  return { text: out.join("\n"), removed };
+  let cleaned = out.join("\n");
+  if (removedBefore > 0 && kept > 0) {
+    cleaned = writeMediaSequence(cleaned, readMediaSequence(cleaned) + removedBefore);
+  }
+  return { text: cleaned, removed, removedBefore };
 }
 
 /** Media sequence number announced by the playlist (0 if absent). */
