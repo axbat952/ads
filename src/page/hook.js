@@ -78,7 +78,12 @@
   }
 
   function blobWithPreamble(source) {
-    const header = `globalThis.__ADS_REMOVE_TOKEN = ${JSON.stringify(TOKEN)};\n`;
+    // The state travels with the payload. A worker built during the instant the
+    // switch is flipped would otherwise start on the default — enabled — and
+    // only learn otherwise from a message sent after it had already begun.
+    const header =
+      `globalThis.__ADS_REMOVE_TOKEN = ${JSON.stringify(TOKEN)};\n` +
+      `globalThis.__ADS_REMOVE_ENABLED = ${enabled ? "true" : "false"};\n`;
     return URL.createObjectURL(
       new Blob([`${header}${WORKER_PAYLOAD}\n;\n${source}`], { type: "text/javascript" }),
     );
@@ -92,6 +97,16 @@
     window.Worker = class extends OriginalWorker {
       constructor(url, workerOptions) {
         let target = url;
+
+        // Switched off: build the worker exactly as the player asked for it.
+        // The subclass cannot be removed once installed — it was put in place
+        // before the player existed — so this is where "off" has to be honoured
+        // for every worker created from now on, and the player builds new ones
+        // constantly: on reload, on channel change, on quality change.
+        if (!enabled) {
+          super(url, workerOptions);
+          return;
+        }
 
         try {
           const text = typeof url === "string" ? url : String(url);
@@ -145,6 +160,7 @@
       announcedChannels.clear();
       // A reload builds a new worker, which knows none of this: say it again.
       announcedOrder = "";
+      if (channel) channel.postMessage({ key: "ADS_Enabled", enabled });
       broadcastChannelName();
       return;
     }

@@ -186,6 +186,15 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (!message) return undefined;
 
   if (message.source === "ads-remove-bridge") {
+    // Switched off, nothing from a player worker is recorded. One built before
+    // the switch moved can still be running, and its reports must not keep the
+    // panel alive, the badge counting and the log filling while the user
+    // believes the tool is stopped.
+    if (!enabled) {
+      if (message.type === "stats") respond({ order: [] });
+      return message.type === "stats";
+    }
+
     if (message.type === "stats" && message.stats) {
       // Worker ids are per tab, so they are prefixed to keep two Twitch tabs
       // from colliding.

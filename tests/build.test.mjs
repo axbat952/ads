@@ -32,6 +32,15 @@ describe("worker preamble", () => {
     assert.ok(payload.trimEnd().endsWith("})();"));
   });
 
+  it("starts in the state the page was in, not on the default", () => {
+    // The switch was cosmetic for one release because the payload ignored it:
+    // every worker the player built after the flip started enabled again.
+    assert.ok(
+      workerPayload().includes("__ADS_REMOVE_ENABLED"),
+      "the worker must read the switch the page injected",
+    );
+  });
+
   it("bundles the engine, not just the hook", () => {
     assert.ok(payload.includes("createBlocker"));
     assert.ok(payload.includes("stitched"), "the detection marker is present");

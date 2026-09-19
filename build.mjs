@@ -82,7 +82,7 @@ export function workerPayload() {
   // The IIFE is mandatory: our declarations would otherwise share the global
   // scope with Twitch's minified code, whose names are unpredictable.
   const trace = process.env.TRACE ? "globalThis.__ADS_REMOVE_TRACE = true;\n" : "";
-  return `(() => {\n"use strict";\n${trace}${flat}\ntry { installHook(self); } catch (e) { /* not a player worker */ }\n})();`;
+  return `(() => {\n"use strict";\n${trace}${flat}\ntry { installHook(self, { enabled: globalThis.__ADS_REMOVE_ENABLED !== false }); } catch (e) { /* not a player worker */ }\n})();`;
 }
 
 // -- icons --------------------------------------------------------------

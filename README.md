@@ -80,12 +80,12 @@ was learned about the channel you are on.
 ## Switching it off
 
 The panel has an on/off switch. Off is a true pass-through, not a quieter mode:
-the engine stops reading playlists, and on the next page load the player's
-`Worker` is left alone entirely — the extension may as well not be installed.
+the engine stops reading playlists, every worker the player builds from then on
+is left exactly as the player asked for it, and nothing is counted.
 
 Switching off applies to open tabs immediately. Switching back on needs a page
-reload, because the player builds its worker once, when the page loads. The
-setting persists, so a tab opened later stays off until you turn it back on.
+reload, because `window.Worker` can only be replaced before the player starts.
+The setting persists, so a tab opened later stays off until you turn it back on.
 
 It is there to make the extension easy to rule out: if a stream misbehaves, one
 click tells you whether this is the cause.
@@ -104,7 +104,7 @@ src/page/hook.js      MAIN-world hook: Worker, player reload, ad overlay
 src/page/bridge.js    ISOLATED-world relay to the extension
 src/background.js     service worker: totals, badge, persistence, the ranking
 build.mjs             dependency-free build: bundle, manifest, icons
-tests/                offline tests, smoke test, candidate probe
+tests/                offline tests, smoke tests, candidate probe
 ```
 
 Every module under `src/lib` is pure: all I/O goes through injected functions.
