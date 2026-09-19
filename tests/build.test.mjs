@@ -111,6 +111,30 @@ describe("built extension", () => {
     assert.doesNotThrow(() => new Function(hook));
   });
 
+  it("carries no commit stamp by default, so dist/ can match itself", () => {
+    // `dist/` is committed. A build that always embedded HEAD could never agree
+    // with the commit carrying it — the stamp would name that commit's parent —
+    // and the check that dist/ is in step with src/ would fail on every push.
+    build();
+    assert.equal(JSON.parse(lire("manifest.json")).version_name, undefined);
+  });
+
+  it("stamps the commit when one is supplied", () => {
+    // Release archives are built from a commit that already exists, so their
+    // stamp is exact. It is the only copy whose provenance is recorded nowhere
+    // else, and the panel shows it.
+    process.env.ADS_COMMIT = "deadbee";
+    try {
+      build();
+      const manifestJson = JSON.parse(lire("manifest.json"));
+      assert.equal(manifestJson.version_name, `${manifestJson.version} (deadbee)`);
+      assert.match(manifestJson.version, /^\d+\.\d+\.\d+$/, "version itself stays numeric");
+    } finally {
+      delete process.env.ADS_COMMIT;
+      build(); // leave dist/ as the repository has it
+    }
+  });
+
   it("requests only the permissions it needs", () => {
     const manifestJson = JSON.parse(lire("manifest.json"));
     assert.deepEqual(manifestJson.permissions, ["storage"]);

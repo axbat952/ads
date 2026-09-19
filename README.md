@@ -42,7 +42,9 @@ node build.mjs
 Then in Chrome: `chrome://extensions` → enable **Developer mode** → **Load
 unpacked** → pick the `dist` folder.
 
-`dist/` is committed, so you can skip the build if you have not changed anything.
+`dist/` is committed, so you can skip the build if you have not changed
+anything. The panel shows which build is loaded, bottom right; a release
+archive also names the commit it was built from (`node build.mjs --stamp`).
 
 Requires Node 22 or later to build and to run the tests. There are no runtime
 dependencies and no third-party libraries.

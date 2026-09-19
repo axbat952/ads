@@ -11,6 +11,7 @@
  * No dependencies — nothing to install, nothing that breaks on an npm update.
  */
 
+import { execFileSync } from "node:child_process";
 import { deflateSync } from "node:zlib";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -140,11 +141,40 @@ function iconPng(size) {
 
 // -- manifest -----------------------------------------------------------
 
+/**
+ * Commit stamp for a build meant to be handed out.
+ *
+ * Off by default, and deliberately so: `dist/` is committed, and a build that
+ * embedded `HEAD` could never match itself — the stamp would name the commit
+ * before the one carrying it, and the check that `dist/` is in step with `src/`
+ * would fail on every push.
+ *
+ * A release archive is different. It is built from a commit that already
+ * exists, so the stamp is exact, and it is the only copy whose provenance is
+ * not otherwise recorded anywhere.
+ */
+function commitStamp() {
+  if (process.env.ADS_COMMIT) return process.env.ADS_COMMIT.trim();
+  if (!process.argv.includes("--stamp")) return "";
+  try {
+    return execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: ROOT,
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    return ""; // no git, or not a checkout: the version alone will do
+  }
+}
+
 function manifest() {
+  const commit = commitStamp();
   return {
     manifest_version: 3,
     name: "Twitch Ads Remove",
     version: VERSION,
+    // Free-form, unlike `version`. Chrome shows it on chrome://extensions and
+    // the panel reads it back.
+    ...(commit ? { version_name: `${VERSION} (${commit})` } : {}),
     description:
       "Removes Twitch ads by serving an ad-free copy of the same stream, and hides the ad when none exists.",
     // `storage` only. No `host_permissions`: content scripts declare their own

@@ -165,9 +165,11 @@ $("reset").addEventListener("click", async () => {
   refresh();
 });
 
-// The version the browser actually loaded, which is the one that matters when
-// reporting a problem: an unpacked extension is updated by hand.
-$("version").textContent = `v${chrome.runtime.getManifest().version}`;
+// The build the browser actually loaded, which is what matters when reporting a
+// problem: an unpacked extension is updated by hand. A release archive also
+// carries the commit it was built from; a local build has only the version.
+const build = chrome.runtime.getManifest();
+$("version").textContent = `v${build.version_name || build.version}`;
 
 chrome.storage.local
   .get(ENABLED_KEY)
