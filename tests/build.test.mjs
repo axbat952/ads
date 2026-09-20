@@ -93,6 +93,31 @@ describe("built extension", () => {
     assert.ok(seen.has("lib/ranking.js"), "the ranking really is reachable from the service worker");
   });
 
+  it("writes the same bytes whatever the checkout's line endings", () => {
+    // Git normalises the files it stores, but that does not reach the worker
+    // preamble: it is embedded in dist/page/hook.js as a JSON string, where a
+    // CRLF has become the two characters \ and r. Git cannot see those as line
+    // endings, so a build on Windows and one on CI disagreed for ever and the
+    // "dist/ is up to date" check failed on every push.
+    build();
+    for (const file of ["page/hook.js", "background.js", "popup/popup.css", "popup/popup.html"]) {
+      assert.equal(
+        readFileSync(join(DIST, file)).includes(13),
+        false,
+        `${file} carries a carriage return`,
+      );
+    }
+    // The one that matters, and the one a byte check cannot see: inside the
+    // preamble a line ending is not a byte but the characters that escape it.
+    // A lone `\r` is legitimate — `hls.js` strips carriage returns from the
+    // playlists Twitch sends — so it is the pair that is looked for.
+    assert.equal(
+      lire("page/hook.js").includes(String.raw`\r\n`),
+      false,
+      "a CRLF line ending survives escaped inside the worker preamble",
+    );
+  });
+
   it("injects the hook into the MAIN world as early as possible", () => {
     const manifestJson = JSON.parse(lire("manifest.json"));
     const mainWorld = manifestJson.content_scripts.find((c) => c.world === "MAIN");

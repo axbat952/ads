@@ -23,6 +23,20 @@ const DIST = join(ROOT, "dist");
 /** One source of truth: the manifest version is the package version. */
 const VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
 
+/**
+ * Read a source file with its line endings normalised.
+ *
+ * `dist/` is committed and checked against a fresh build, so the build has to
+ * produce the same bytes everywhere. Git already normalises the files it
+ * stores, but that does not reach the worker preamble: it is embedded in
+ * `dist/page/hook.js` as a JSON string, where a CRLF has become the two
+ * characters `\` and `r`. Git cannot see those as line endings, so a build on a
+ * CRLF checkout and one on a LF checkout disagree for ever.
+ */
+function readText(path) {
+  return readFileSync(path, "utf8").replace(/\r\n/g, "\n");
+}
+
 // -- micro bundler ------------------------------------------------------
 
 const IMPORT_RE = /^import\s+\{[\s\S]*?\}\s+from\s+["']([^"']+)["'];?[ \t]*$/gm;
@@ -46,7 +60,7 @@ function flatten(entry) {
     if (seen.has(absolute)) return;
     seen.add(absolute);
 
-    const source = readFileSync(absolute, "utf8");
+    const source = readText(absolute);
     for (const dependency of [...source.matchAll(IMPORT_RE)].map((m) => m[1])) {
       if (!dependency.startsWith(".")) {
         throw new Error(`${absolute}: non-relative import "${dependency}" cannot be flattened`);
@@ -189,14 +203,14 @@ function write(relative, content) {
 }
 
 function copy(relative) {
-  write(relative, readFileSync(join(SRC, relative)));
+  write(relative, readText(join(SRC, relative)));
 }
 
 export function build() {
   rmSync(DIST, { recursive: true, force: true });
 
   const payload = workerPayload();
-  const hook = readFileSync(join(SRC, "page", "hook.js"), "utf8");
+  const hook = readText(join(SRC, "page", "hook.js"));
   if (!hook.includes('"__WORKER_PAYLOAD__"')) {
     throw new Error("src/page/hook.js no longer contains the __WORKER_PAYLOAD__ marker");
   }
