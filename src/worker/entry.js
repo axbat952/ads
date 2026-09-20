@@ -32,6 +32,31 @@ const HLS_MIME = "application/vnd.apple.mpegurl";
 /** How often telemetry is broadcast. */
 const TELEMETRY_MS = 2000;
 
+/**
+ * Upper bound on a single backup request.
+ *
+ * Nothing else bounds them. The search runs every candidate through
+ * `Promise.all`, so one connection that never answers holds the whole search,
+ * and the player's own playlist request is waiting behind it — its buffer
+ * drains and the picture stops.
+ *
+ * The engine's own guard, `FIRST_WAIT`, is a `setTimeout`, and Chrome throttles
+ * timers in a hidden page: in a background tab that guard can stretch far past
+ * the 2.5s it promises. This one is enforced by the platform, not by a timer we
+ * own, so it holds wherever the tab is. A full chain of three requests measures
+ * about 1.3s in practice, which leaves ample headroom.
+ */
+export const REQUEST_TIMEOUT_MS = 4000;
+
+/** `AbortSignal.timeout` where it exists, nothing where it does not. */
+function deadline(ms = REQUEST_TIMEOUT_MS) {
+  try {
+    return AbortSignal.timeout(ms);
+  } catch {
+    return undefined;
+  }
+}
+
 function urlOf(input) {
   if (typeof input === "string") return input;
   if (input && typeof input.url === "string") return input.url;
@@ -114,6 +139,7 @@ export function installHook(scope, options = {}) {
       body: body || undefined,
       // No cookies on backup calls: they must look like an anonymous session.
       credentials: "omit",
+      signal: deadline(),
     });
     return { status: response.status, text: await response.text() };
   }

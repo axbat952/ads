@@ -251,3 +251,30 @@ describe("off switch", () => {
     stop();
   });
 });
+
+describe("backup requests are bounded", () => {
+  it("carries a deadline, so one dead connection cannot hold the player", async () => {
+    // Nothing else bounds them: the search runs every candidate through
+    // Promise.all, and the player's own playlist request waits behind it. The
+    // engine's FIRST_WAIT guard is a setTimeout, and Chrome throttles timers in
+    // a hidden page — in a background tab it does not hold.
+    const seen = [];
+    const scope = fakeScope([["gql", "{}"], ["/v1/playlist/", direct()]]);
+    const original = scope.fetch;
+    scope.fetch = (input, init) => {
+      seen.push(init || {});
+      return original(input, init);
+    };
+
+    const { blocker, stop } = installHook(scope);
+    blocker.setChannel("demo_channel");
+    await blocker.onMedia("https://origine.example/chunked.m3u8", preroll());
+
+    const backup = seen.filter((init) => init && init.credentials === "omit");
+    assert.ok(backup.length, "the engine did reach the network");
+    for (const init of backup) {
+      assert.ok(init.signal, "a backup request went out with no deadline");
+    }
+    stop();
+  });
+});
