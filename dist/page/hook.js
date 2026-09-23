@@ -464,6 +464,11 @@
    *
    * It also acts. A stream stuck for this long needs a reload either way; the
    * user was doing it by hand.
+   *
+   * The decision is taken in the event handlers, not only on a tick. The tick
+   * is a `setInterval`, which Chrome throttles to once a minute in a page that
+   * has been hidden for a while — precisely the case this exists for. Media
+   * events carry no such penalty, so every one of them is a chance to act.
    */
   const STALL_SECONDS = 12;
   const STALL_RELOAD_COOLDOWN = 45;
@@ -482,10 +487,14 @@
   }
 
   function onStarved(what) {
-    if (stalledSince) return;
-    stalledSince = Date.now() / 1000;
-    stallAnnounced = false;
-    console.info(`${TAG} picture starved (${what}, tab ${document.visibilityState})`);
+    if (!stalledSince) {
+      stalledSince = Date.now() / 1000;
+      stallAnnounced = false;
+      console.info(`${TAG} picture starved (${what}, tab ${document.visibilityState})`);
+    }
+    // A second `waiting` while already starved is the only heartbeat available
+    // in a throttled tab: take the opportunity to decide.
+    checkStall();
   }
 
   function onFlowing() {
@@ -512,38 +521,66 @@
       document.addEventListener(name, () => onFlowing(), true);
     }
 
-    setInterval(() => {
-      if (!enabled) return;
-      if (!stalledSince) {
-        // Belt and braces: a picture can stop without either event firing.
-        const video = currentVideo();
-        if (video && !video.paused && video.readyState < 3) onStarved("readyState");
-        return;
-      }
-      if (pictureMoving()) {
-        onFlowing();
-        return;
-      }
+    // The player pausing itself is not the user pausing it, and it is what a
+    // player does when it gives up on a timeline it cannot follow — which is
+    // how a freeze escaped this watchdog entirely: `waiting` never fired.
+    //
+    // The two are told apart by the data on hand. A deliberate pause leaves a
+    // full buffer; a player that has given up has nothing to play. Without
+    // that guard, pausing a stream on purpose would have it reloaded from
+    // under you twelve seconds later.
+    for (const name of ["pause", "suspend", "emptied", "error"]) {
+      document.addEventListener(
+        name,
+        () => {
+          const video = currentVideo();
+          if (video && video.readyState < 3) onStarved(name);
+        },
+        true,
+      );
+    }
 
-      const stuck = Date.now() / 1000 - stalledSince;
-      if (stuck < STALL_SECONDS) return;
+    setInterval(tick, 2000);
+    document.addEventListener("visibilitychange", tick);
+  }
 
-      if (!stallAnnounced) {
-        stallAnnounced = true;
-        const hidden = document.visibilityState === "hidden";
-        console.info(`${TAG} picture stuck for ${Math.round(stuck)}s (tab ${hidden ? "hidden" : "visible"})`);
-        toExtension("event", {
-          event: { type: "pictureStuck", seconds: Math.round(stuck), hidden },
-        });
-      }
+  /** Has the picture moved since we last looked? */
+  function checkStall() {
+    if (!enabled || !stalledSince) return;
+    if (pictureMoving()) {
+      onFlowing();
+      return;
+    }
 
-      const t = Date.now() / 1000;
-      if (t - lastStallReload < STALL_RELOAD_COOLDOWN) return;
-      lastStallReload = t;
-      const how = reloadPlayer();
-      console.info(`${TAG} reloading the player to unstick it -> ${how}`);
-      toExtension("event", { event: { type: "reloadPerformed", reason: "picture stuck", how } });
-    }, 2000);
+    const stuck = Date.now() / 1000 - stalledSince;
+    if (stuck < STALL_SECONDS) return;
+
+    if (!stallAnnounced) {
+      stallAnnounced = true;
+      const hidden = document.visibilityState === "hidden";
+      console.info(`${TAG} picture stuck for ${Math.round(stuck)}s (tab ${hidden ? "hidden" : "visible"})`);
+      toExtension("event", {
+        event: { type: "pictureStuck", seconds: Math.round(stuck), hidden },
+      });
+    }
+
+    const t = Date.now() / 1000;
+    if (t - lastStallReload < STALL_RELOAD_COOLDOWN) return;
+    lastStallReload = t;
+    const how = reloadPlayer();
+    console.info(`${TAG} reloading the player to unstick it -> ${how}`);
+    toExtension("event", { event: { type: "reloadPerformed", reason: "picture stuck", how } });
+  }
+
+  function tick() {
+    if (!enabled) return;
+    if (!stalledSince) {
+      // Belt and braces: a picture can stop without any event firing at all.
+      const video = currentVideo();
+      if (video && video.readyState < 3 && video.currentTime > 0) onStarved("readyState");
+      return;
+    }
+    checkStall();
   }
 
   // -- 6. the off switch --------------------------------------------------
