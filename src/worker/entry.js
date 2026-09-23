@@ -48,6 +48,17 @@ const TELEMETRY_MS = 2000;
  */
 export const REQUEST_TIMEOUT_MS = 4000;
 
+/**
+ * Past this, the hook held the player's own request long enough to matter.
+ *
+ * The player polls every two seconds and has only a few seconds of buffer, so
+ * anything above this is worth a line in the log — it is the one measurement
+ * that separates "the extension is holding the response" from "the stream
+ * stopped for its own reasons", and the log said nothing at all about a freeze
+ * that only happened in a background tab.
+ */
+export const HOLD_WARN_MS = 3000;
+
 /** `AbortSignal.timeout` where it exists, nothing where it does not. */
 function deadline(ms = REQUEST_TIMEOUT_MS) {
   try {
@@ -80,11 +91,22 @@ export function isPlaylist(url) {
   return PLAYLIST_RE.test(url) && !SEGMENT_RE.test(url);
 }
 
-function textResponse(text, origin) {
+/**
+ * Hand the player a playlist, keeping everything Twitch said about it.
+ *
+ * The body is ours; the status and the headers are not. An earlier version
+ * built a bare 200 with two headers of its own, discarding the rest — caching
+ * directives, `Date`, the low-latency hints the player reads to schedule its
+ * next poll. Replacing a playlist is no reason to rewrite its envelope.
+ */
+function playlistResponse(text, source, from) {
+  const headers = new Headers(from ? from.headers : undefined);
+  headers.set("Content-Type", HLS_MIME);
+  headers.set("X-Ads-Remove-Source", source);
   return new Response(text, {
-    status: 200,
-    statusText: "OK",
-    headers: { "Content-Type": HLS_MIME, "X-Ads-Remove-Source": origin },
+    status: from ? from.status : 200,
+    statusText: from ? from.statusText : "OK",
+    headers,
   });
 }
 
@@ -105,6 +127,11 @@ export function installHook(scope, options = {}) {
   // The off switch. False makes the hook a pass-through: no body is read, no
   // telemetry is sent, and the player gets byte-for-byte what Twitch returned.
   let enabled = options.enabled !== false;
+
+  // Whether the tab is in the background, pushed down by the page: a worker has
+  // no `document` to ask. Only used to annotate the log — a freeze that happens
+  // only when hidden is a different animal from one that happens anywhere.
+  let hidden = false;
 
   // Private channel. Never `scope.postMessage`, which belongs to the player. The
   // name carries a per-page token so another Twitch tab does not receive this
@@ -164,37 +191,61 @@ export function installHook(scope, options = {}) {
 
     if (!isPlaylist(url)) return originalFetch(input, init);
 
+    const started = Date.now();
     const response = await originalFetch(input, init);
     if (!response.ok) return response;
 
-    // Read the body from a clone: if anything fails afterwards, the original
-    // response is still consumable by the player.
+    // Read the body ONCE, never through `clone()`.
+    //
+    // Cloning tees the stream into two branches. Both were consumed only when
+    // the playlist came back unchanged; as soon as one was replaced, the
+    // player received a response of ours and the original branch was left
+    // unread — on every poll, of every rendition, for the life of the tab.
+    // Nothing reclaims those, and the reading the engine does is exactly the
+    // reading the player needs, so there was never a second branch to justify.
     let text;
     try {
-      text = await response.clone().text();
+      text = await response.text();
     } catch {
       return response;
     }
-    if (!text.startsWith("#EXTM3U")) return response;
+
+    // From here the body is consumed: the player can only be served a response
+    // built from the text, never `response` itself.
+    const held = () => {
+      const ms = Date.now() - started;
+      if (ms >= HOLD_WARN_MS) {
+        send({ key: "ADS_Event", event: { type: "slowHold", ms, hidden } });
+      }
+      return ms;
+    };
+
+    if (!text.startsWith("#EXTM3U")) {
+      held();
+      return playlistResponse(text, "passthrough", response);
+    }
 
     try {
       if (isMaster(text)) {
         const out = blocker.onMaster(url, text, channelFromUrl(url));
-        return out === text ? response : textResponse(out, "master");
+        held();
+        return playlistResponse(out, out === text ? "origin" : "master", response);
       }
       const out = await blocker.onMedia(url, text);
-      return out === text ? response : textResponse(out, "media");
+      held();
+      return playlistResponse(out, out === text ? "origin" : "media", response);
     } catch (error) {
-      // An engine error must never break playback: hand back the original
-      // response, ads included.
+      // An engine error must never break playback: hand back what Twitch sent,
+      // ads included.
       send({ key: "ADS_Event", event: { type: "error", message: String(error && error.message) } });
-      return response;
+      held();
+      return playlistResponse(text, "origin", response);
     }
   };
 
-  // Three things are received from the page: the channel being watched, the off
-  // switch, and the learned order of the backup sources. No credentials travel:
-  // backup requests are anonymous by construction.
+  // What the page sends down: the channel being watched, the off switch, the
+  // learned order of the backup sources, and whether the tab is visible. No
+  // credentials travel: backup requests are anonymous by construction.
   if (channel) {
     channel.addEventListener("message", (event) => {
       const data = event && event.data;
@@ -203,6 +254,7 @@ export function installHook(scope, options = {}) {
         enabled = data.enabled !== false;
         blocker.setEnabled(enabled);
       } else if (data && data.key === "ADS_Ranking") blocker.setRanking(data.order);
+      else if (data && data.key === "ADS_Visible") hidden = data.hidden === true;
     });
   }
 

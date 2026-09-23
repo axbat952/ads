@@ -161,6 +161,7 @@
       // A reload builds a new worker, which knows none of this: say it again.
       announcedOrder = "";
       if (channel) channel.postMessage({ key: "ADS_Enabled", enabled });
+      broadcastVisibility(true);
       broadcastChannelName();
       return;
     }
@@ -189,6 +190,11 @@
         console.info(`${TAG} ad break ${event.roll || "?"} ${Math.round(event.duration || 0)}s (${event.spots || 0} spot(s))`);
       } else if (event.type === "swap") {
         console.info(`${TAG} feed replaced via ${event.label} (${event.quality})`);
+      } else if (event.type === "slowHold") {
+        console.info(
+          `${TAG} playlist held ${(event.ms / 1000).toFixed(1)}s` +
+            ` (tab ${event.hidden ? "hidden" : "visible"}) — the player was waiting on us`,
+        );
       } else if (event.type === "error") {
         console.error(`${TAG} engine error: ${event.message}`);
       }
@@ -226,6 +232,25 @@
     if (!channel || !name || name === announcedChannel) return;
     announcedChannel = name;
     channel.postMessage({ key: "ADS_Channel", channel: name });
+  }
+
+  /**
+   * Tell the worker whether the tab is in the background.
+   *
+   * A worker has no `document`, and the difference matters: a freeze that
+   * happens only when hidden is a different problem from one that happens
+   * anywhere. It is re-sent on every change and to every new worker.
+   */
+  let announcedHidden = null;
+  function broadcastVisibility(force = false) {
+    const now = document.visibilityState === "hidden";
+    if (!channel || (now === announcedHidden && !force)) return;
+    announcedHidden = now;
+    channel.postMessage({ key: "ADS_Visible", hidden: now });
+  }
+
+  function watchVisibility() {
+    document.addEventListener("visibilitychange", () => broadcastVisibility());
   }
 
   /**
@@ -474,6 +499,7 @@
   // without reloading, and so a worker that survives the change hears about it.
   openChannel();
   watchAddress();
+  watchVisibility();
 
   if (!enabled) {
     console.info(`${TAG} switched off — the player is left untouched`);
@@ -481,6 +507,7 @@
   }
 
   hookWorker();
+  broadcastVisibility(true);
   broadcastChannelName();
   console.info(`${TAG} hook installed`);
 })();

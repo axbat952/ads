@@ -278,3 +278,61 @@ describe("backup requests are bounded", () => {
     stop();
   });
 });
+
+describe("what the player gets back", () => {
+  /** A fake whose responses carry headers and count their clones. */
+  function scopeWithHeaders(body) {
+    let clones = 0;
+    const scope = fakeScope([]);
+    scope.fetch = async () => {
+      const response = new Response(body, {
+        status: 200,
+        statusText: "OK",
+        headers: { "X-Twitch-Hint": "42", "Cache-Control": "no-cache" },
+      });
+      return new Proxy(response, {
+        get(target, key) {
+          if (key === "clone") clones += 1;
+          const value = Reflect.get(target, key);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    };
+    return { scope, clones: () => clones };
+  }
+
+  it("never clones the response", async () => {
+    // Cloning tees the stream. Both branches were consumed only while the
+    // playlist came back unchanged; as soon as one was replaced the original
+    // branch was left unread, on every poll, for the life of the tab.
+    const { scope, clones } = scopeWithHeaders(direct());
+    const { stop } = installHook(scope);
+    await scope.fetch(VRAIE_MEDIA);
+    assert.equal(clones(), 0, "the body is read once, by whoever needs it");
+    stop();
+  });
+
+  it("keeps the headers Twitch sent, even when the body is replaced", async () => {
+    // The player reads them to schedule its next poll. Replacing a playlist is
+    // no reason to rewrite its envelope.
+    const { scope } = scopeWithHeaders(preroll());
+    const { stop } = installHook(scope);
+    const out = await scope.fetch(VRAIE_MEDIA);
+
+    assert.equal(out.headers.get("X-Twitch-Hint"), "42");
+    assert.equal(out.headers.get("Cache-Control"), "no-cache");
+    assert.equal(out.headers.get("Content-Type"), "application/vnd.apple.mpegurl");
+    assert.ok(out.headers.get("X-Ads-Remove-Source"), "and says where the body came from");
+    assert.equal(out.status, 200);
+    stop();
+  });
+
+  it("hands back a body the player can still read", async () => {
+    const body = direct();
+    const { scope } = scopeWithHeaders(body);
+    const { stop } = installHook(scope);
+    const out = await scope.fetch(VRAIE_MEDIA);
+    assert.equal(await out.text(), body, "unchanged, and not consumed on the way");
+    stop();
+  });
+});
