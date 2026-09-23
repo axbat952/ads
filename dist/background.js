@@ -220,10 +220,26 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
           Date.now() / 1000,
         );
       }
+      const where = (hidden) => (hidden ? "tab hidden" : "tab visible");
       if (event.type === "log") note(event.level || "info", event.message || "");
       else if (event.type === "break") note("warning", `ad break ${event.roll || "?"} ${Math.round(event.duration || 0)}s`);
       else if (event.type === "reloadPerformed") note("warning", `player reload: ${event.reason} (${event.how})`);
       else if (event.type === "error") note("error", `engine error: ${event.message}`);
+      // The diagnostics below answer one question between them: when the
+      // picture stops, is the extension holding the player, has the player
+      // given up, or neither? The console carried them; this log is what gets
+      // read after the fact, and it is the one that survives a reload.
+      else if (event.type === "pictureStuck") {
+        note("error", `picture stuck ${event.seconds}s (${where(event.hidden)})`);
+      } else if (event.type === "pictureRecovered") {
+        note("info", `picture recovered after ${event.seconds}s`);
+      } else if (event.type === "slowHold") {
+        note("warning", `playlist held ${(event.ms / 1000).toFixed(1)}s (${where(event.hidden)})`);
+      } else if (event.type === "playerStopped") {
+        note("warning", `player stopped asking for playlists ${event.after}s ago (${where(event.hidden)})`);
+      } else if (event.type === "pollResumed") {
+        note("info", `player is asking again, after ${event.after}s`);
+      }
       scheduleWrite();
     } else if (message.type === "ready") {
       note("info", "engine installed in the player worker");

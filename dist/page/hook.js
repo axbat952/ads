@@ -450,7 +450,103 @@
     mutedBefore = null;
   }
 
-  // -- 5. the off switch --------------------------------------------------
+  // -- 5. watching the picture ---------------------------------------------
+
+  /**
+   * Watch the element the user actually looks at.
+   *
+   * Every measurement so far lived in the worker, and the worker is exactly
+   * what the player tears down when it gives up — so a freeze erased its own
+   * evidence. This lives in the page, which survives that, and it listens to
+   * the media events the browser fires when a picture starves: `waiting` and
+   * `stalled`. Those are not timers, so a throttled background tab does not
+   * delay them.
+   *
+   * It also acts. A stream stuck for this long needs a reload either way; the
+   * user was doing it by hand.
+   */
+  const STALL_SECONDS = 12;
+  const STALL_RELOAD_COOLDOWN = 45;
+
+  let stalledSince = 0;
+  let lastStallReload = 0;
+  let stallAnnounced = false;
+
+  function currentVideo() {
+    return document.querySelector("video");
+  }
+
+  function pictureMoving() {
+    const video = currentVideo();
+    return Boolean(video) && !video.paused && video.readyState >= 3;
+  }
+
+  function onStarved(what) {
+    if (stalledSince) return;
+    stalledSince = Date.now() / 1000;
+    stallAnnounced = false;
+    console.info(`${TAG} picture starved (${what}, tab ${document.visibilityState})`);
+  }
+
+  function onFlowing() {
+    if (!stalledSince) return;
+    const held = Math.round((Date.now() / 1000 - stalledSince) * 10) / 10;
+    stalledSince = 0;
+    stallAnnounced = false;
+    if (held >= 2) {
+      console.info(`${TAG} picture recovered after ${held}s`);
+      toExtension("event", { event: { type: "pictureRecovered", seconds: held } });
+    }
+  }
+
+  /**
+   * Media events do not bubble, but they do capture — one listener on the
+   * document catches them from whatever `<video>` the player has built, and
+   * there is no element to re-attach to when it builds a new one.
+   */
+  function watchPicture() {
+    for (const name of ["waiting", "stalled"]) {
+      document.addEventListener(name, () => onStarved(name), true);
+    }
+    for (const name of ["playing", "timeupdate"]) {
+      document.addEventListener(name, () => onFlowing(), true);
+    }
+
+    setInterval(() => {
+      if (!enabled) return;
+      if (!stalledSince) {
+        // Belt and braces: a picture can stop without either event firing.
+        const video = currentVideo();
+        if (video && !video.paused && video.readyState < 3) onStarved("readyState");
+        return;
+      }
+      if (pictureMoving()) {
+        onFlowing();
+        return;
+      }
+
+      const stuck = Date.now() / 1000 - stalledSince;
+      if (stuck < STALL_SECONDS) return;
+
+      if (!stallAnnounced) {
+        stallAnnounced = true;
+        const hidden = document.visibilityState === "hidden";
+        console.info(`${TAG} picture stuck for ${Math.round(stuck)}s (tab ${hidden ? "hidden" : "visible"})`);
+        toExtension("event", {
+          event: { type: "pictureStuck", seconds: Math.round(stuck), hidden },
+        });
+      }
+
+      const t = Date.now() / 1000;
+      if (t - lastStallReload < STALL_RELOAD_COOLDOWN) return;
+      lastStallReload = t;
+      const how = reloadPlayer();
+      console.info(`${TAG} reloading the player to unstick it -> ${how}`);
+      toExtension("event", { event: { type: "reloadPerformed", reason: "picture stuck", how } });
+    }, 2000);
+  }
+
+  // -- 6. the off switch --------------------------------------------------
 
   /**
    * Apply a switch change to a page that is already open.
@@ -507,6 +603,7 @@
   openChannel();
   watchAddress();
   watchVisibility();
+  watchPicture();
 
   if (!enabled) {
     console.info(`${TAG} switched off — the player is left untouched`);
