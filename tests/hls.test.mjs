@@ -24,6 +24,7 @@ import {
   rollType,
   stripAds,
   stripHevcVariants,
+  writeMediaSequence,
 } from "../src/lib/hls.js";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -201,6 +202,26 @@ describe("stripAds", () => {
     assert.equal(removed, 1);
     assert.equal(removedBefore, 0, "nothing was dropped before the first kept segment");
     assert.equal(readMediaSequence(text), 500);
+  });
+
+  it("moves Twitch's own sequence counter with the standard one", () => {
+    // They travel together in a real playlist. Rewriting one and not the other
+    // leaves them disagreeing by the whole distance between two Twitch
+    // sessions — on every swap, and again on the return to live.
+    const body = lire("media-live.m3u8");
+    const before = readMediaSequence(body);
+    const out = writeMediaSequence(body, before + 500);
+
+    assert.equal(readMediaSequence(out), before + 500);
+    const live = /^#EXT-X-TWITCH-LIVE-SEQUENCE:(\d+)$/m.exec(out);
+    assert.ok(live, "the tag is still there");
+    assert.equal(Number(live[1]), before + 500, "and it moved by the same amount");
+  });
+
+  it("leaves a playlist without that tag alone", () => {
+    const out = writeMediaSequence(["#EXTM3U", "#EXT-X-MEDIA-SEQUENCE:10", ""].join("\n"), 20);
+    assert.equal(readMediaSequence(out), 20);
+    assert.equal(out.includes("TWITCH-LIVE-SEQUENCE"), false);
   });
 
   it("neutralises tracking URLs", () => {

@@ -195,6 +195,13 @@
           `${TAG} playlist held ${(event.ms / 1000).toFixed(1)}s` +
             ` (tab ${event.hidden ? "hidden" : "visible"}) — the player was waiting on us`,
         );
+      } else if (event.type === "playerStopped") {
+        console.info(
+          `${TAG} the player stopped asking for playlists ${event.after}s ago` +
+            ` (tab ${event.hidden ? "hidden" : "visible"}) — nothing is being held on our side`,
+        );
+      } else if (event.type === "pollResumed") {
+        console.info(`${TAG} the player is asking again, after ${event.after}s`);
       } else if (event.type === "error") {
         console.error(`${TAG} engine error: ${event.message}`);
       }

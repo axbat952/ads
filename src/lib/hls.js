@@ -22,6 +22,16 @@ const ATTR_RE = /([A-Za-z0-9-]+)=("[^"]*"|[^,]*)/g;
 const EXTINF_RE = /^#EXTINF:\s*([0-9.]+)\s*,?(.*)$/;
 const SEQ_RE = /^#EXT-X-MEDIA-SEQUENCE:[ \t]*([0-9]+)[ \t]*$/m;
 
+/**
+ * Twitch's own copy of the sequence number, which travels beside the standard
+ * one and normally holds the same value.
+ *
+ * Rewriting one and not the other leaves the two disagreeing by the whole
+ * distance between two Twitch sessions — every swap, and again on the return to
+ * live. They move together here for that reason.
+ */
+const LIVE_SEQ_RE = /^#EXT-X-TWITCH-LIVE-SEQUENCE:[ \t]*([0-9]+)[ \t]*$/m;
+
 const TRACKING_ATTRS = [
   "X-TV-TWITCH-AD-URL",
   "X-TV-TWITCH-AD-CLICK-TRACKING-URL",
@@ -303,7 +313,18 @@ export function writeMediaSequence(text, value) {
   const n = Math.max(0, Math.floor(value));
   const source = String(text);
   if (SEQ_RE.test(source)) {
-    return source.replace(SEQ_RE, `#EXT-X-MEDIA-SEQUENCE:${n}`);
+    const before = Number(SEQ_RE.exec(source)[1]);
+    let out = source.replace(SEQ_RE, `#EXT-X-MEDIA-SEQUENCE:${n}`);
+    // Twitch's own counter has to travel the same distance. Left alone, it
+    // still carries the numbering of whichever session the body came from,
+    // while the standard tag carries ours — the two then disagree by the gap
+    // between two sessions, which is arbitrary.
+    const live = LIVE_SEQ_RE.exec(out);
+    if (live) {
+      const shifted = Math.max(0, Number(live[1]) + n - before);
+      out = out.replace(LIVE_SEQ_RE, `#EXT-X-TWITCH-LIVE-SEQUENCE:${shifted}`);
+    }
+    return out;
   }
   const all = lines(source);
   const header = all.findIndex((l) => l.startsWith("#EXTM3U"));

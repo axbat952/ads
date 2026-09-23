@@ -59,6 +59,15 @@ export const REQUEST_TIMEOUT_MS = 4000;
  */
 export const HOLD_WARN_MS = 3000;
 
+/**
+ * Past this without a single playlist request, the player has stopped asking.
+ *
+ * It polls every two seconds per rendition, so this much silence is not a lull.
+ * It is the other half of the question the log could not answer: whether a
+ * frozen picture means we stopped serving, or the player stopped requesting.
+ */
+export const STALL_MS = 10000;
+
 /** `AbortSignal.timeout` where it exists, nothing where it does not. */
 function deadline(ms = REQUEST_TIMEOUT_MS) {
   try {
@@ -133,6 +142,10 @@ export function installHook(scope, options = {}) {
   // only when hidden is a different animal from one that happens anywhere.
   let hidden = false;
 
+  /** When the player last asked for a playlist, and whether we said so. */
+  let lastPoll = 0;
+  let stallReported = false;
+
   // Private channel. Never `scope.postMessage`, which belongs to the player. The
   // name carries a per-page token so another Twitch tab does not receive this
   // tab's telemetry.
@@ -192,6 +205,15 @@ export function installHook(scope, options = {}) {
     if (!isPlaylist(url)) return originalFetch(input, init);
 
     const started = Date.now();
+    if (stallReported && lastPoll) {
+      send({
+        key: "ADS_Event",
+        event: { type: "pollResumed", after: Math.round((started - lastPoll) / 100) / 10 },
+      });
+    }
+    lastPoll = started;
+    stallReported = false;
+
     const response = await originalFetch(input, init);
     if (!response.ok) return response;
 
@@ -259,7 +281,17 @@ export function installHook(scope, options = {}) {
   }
 
   const timer = setInterval(() => {
-    if (enabled) send({ key: "ADS_Stats", stats: blocker.stats() });
+    if (!enabled) return;
+    send({ key: "ADS_Stats", stats: blocker.stats() });
+
+    const silent = lastPoll ? Date.now() - lastPoll : 0;
+    if (silent > STALL_MS && !stallReported) {
+      stallReported = true;
+      send({
+        key: "ADS_Event",
+        event: { type: "playerStopped", after: Math.round(silent / 100) / 10, hidden },
+      });
+    }
   }, options.telemetryMs || TELEMETRY_MS);
 
   send({ key: "ADS_Ready" });
