@@ -673,3 +673,38 @@ describe("segment numbering across a break", () => {
     }
   });
 });
+
+describe("the discontinuity stays on its segment", () => {
+  /** Index of the segment the discontinuity precedes, or -1 for none. */
+  function boundary(body) {
+    const all = body.replace(/\r/g, "").split("\n");
+    let index = 0;
+    for (let i = 0; i < all.length; i += 1) {
+      if (!all[i].startsWith("#EXTINF:")) continue;
+      if (i > 0 && all[i - 1].startsWith("#EXT-X-DISCONTINUITY")) return index;
+      index += 1;
+    }
+    return -1;
+  }
+
+  it("is still there on the next poll of the same source", async () => {
+    // A playlist is a sliding window over a fixed timeline. The tag used to be
+    // written on the single poll where the source changed and never again, so
+    // a player watched a discontinuity appear and then vanish from in front of
+    // the same segment — after which it cannot place what follows.
+    const { blocker } = setup({ clean: ["popout"] });
+
+    const swapped = await blocker.onMedia(URL_MEDIA, preroll());
+    assert.ok(swapped.includes("clean-0.ts"), "the replacement feed is being served");
+    assert.equal(boundary(swapped), 0, "flagged where the switch landed");
+
+    const again = await blocker.onMedia(URL_MEDIA, preroll());
+    assert.equal(boundary(again), 0, "and still flagged on the next poll");
+  });
+
+  it("flags one boundary, never two", async () => {
+    const { blocker } = setup({ clean: ["popout"] });
+    const swapped = await blocker.onMedia(URL_MEDIA, preroll());
+    assert.equal((swapped.match(/#EXT-X-DISCONTINUITY\b/g) || []).length, 1);
+  });
+});

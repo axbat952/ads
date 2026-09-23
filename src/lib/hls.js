@@ -344,14 +344,20 @@ export function countSegments(text) {
  * session whose timestamps are rewritten independently; without the tag audio
  * resynchronises but the picture freezes.
  */
-export function markDiscontinuity(text) {
+export function markDiscontinuity(text, before = 0) {
+  if (before < 0) return text;
   const all = lines(text);
+  let seen = 0;
   for (let i = 0; i < all.length; i += 1) {
     if (!all[i].startsWith("#EXTINF:")) continue;
+    if (seen !== before) {
+      seen += 1;
+      continue;
+    }
     if (i > 0 && all[i - 1].startsWith("#EXT-X-DISCONTINUITY")) return text;
     return [...all.slice(0, i), "#EXT-X-DISCONTINUITY", ...all.slice(i)].join("\n");
   }
-  return text;
+  return text; // the window does not reach that segment
 }
 
 /**

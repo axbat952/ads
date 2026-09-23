@@ -251,6 +251,33 @@ describe("markDiscontinuity", () => {
     assert.equal(lignes[index - 1], "#EXT-X-DISCONTINUITY");
   });
 
+  it("can flag a segment further into the window", () => {
+    // The boundary does not stay first: the window slides under it. Writing
+    // the tag only in front of the first segment moved the discontinuity onto
+    // a different segment on every poll.
+    const body = [
+      "#EXTM3U",
+      "#EXTINF:2.000,live",
+      "https://cdn/a.ts",
+      "#EXTINF:2.000,live",
+      "https://cdn/b.ts",
+      "#EXTINF:2.000,live",
+      "https://cdn/c.ts",
+    ].join("\n");
+
+    const at1 = markDiscontinuity(body, 1).split("\n");
+    assert.equal(at1[at1.indexOf("#EXT-X-DISCONTINUITY") + 2], "https://cdn/b.ts");
+
+    const at2 = markDiscontinuity(body, 2).split("\n");
+    assert.equal(at2[at2.indexOf("#EXT-X-DISCONTINUITY") + 2], "https://cdn/c.ts");
+  });
+
+  it("leaves the playlist alone when the window no longer reaches it", () => {
+    const body = ["#EXTM3U", "#EXTINF:2.000,live", "https://cdn/a.ts"].join("\n");
+    assert.equal(markDiscontinuity(body, 9), body);
+    assert.equal(markDiscontinuity(body, -1), body);
+  });
+
   it("does not duplicate an existing tag", () => {
     const once = markDiscontinuity(LIVE);
     assert.equal(markDiscontinuity(once), once);

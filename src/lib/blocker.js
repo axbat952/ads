@@ -141,6 +141,10 @@ export function createBlocker({
         counted: null, // {channel, letThrough}
         sequenceOffset: 0,
         lastSequence: -1,
+        // Served sequence number of the segment the last source switch landed
+        // on, for as long as it stays in the window. -1 once it has scrolled
+        // out, or before anything was switched.
+        discontinuityAt: -1,
       };
       states.set(url, state);
     }
@@ -290,13 +294,28 @@ export function createBlocker({
     const sourceSequence = readMediaSequence(body);
 
     if (state.serving !== source) {
-      out = markDiscontinuity(out);
       state.serving = source;
       state.sequenceOffset = state.lastSequence >= 0 ? state.lastSequence + 1 - sourceSequence : 0;
+      // Remember WHICH segment the boundary falls on, not just that there is
+      // one. The tag used to be written on the single poll where the source
+      // changed and never again: on the next poll the window had slid by one,
+      // the same segment was still there, and the discontinuity in front of it
+      // had vanished. A playlist is a sliding window over a fixed timeline, so
+      // a segment that follows a discontinuity must go on following it for as
+      // long as it is listed — a player that sees one appear and disappear
+      // before the same segment can no longer place what comes after.
+      state.discontinuityAt = sourceSequence + state.sequenceOffset;
       log("info", `switched source -> ${source.startsWith("backup:") ? "replacement feed" : "original feed"} (discontinuity flagged)`);
     }
 
     const served = sourceSequence + state.sequenceOffset;
+
+    if (state.discontinuityAt >= 0) {
+      const at = state.discontinuityAt - served;
+      if (at < 0) state.discontinuityAt = -1; // scrolled out of the window
+      else out = markDiscontinuity(out, at);
+    }
+
     if (state.sequenceOffset !== 0) out = writeMediaSequence(out, served);
     state.lastSequence = Math.max(state.lastSequence, served + Math.max(0, countSegments(body) - 1));
     return out;
