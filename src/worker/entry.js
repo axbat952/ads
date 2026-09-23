@@ -110,6 +110,13 @@ export function isPlaylist(url) {
  */
 function playlistResponse(text, source, from) {
   const headers = new Headers(from ? from.headers : undefined);
+  // Everything Twitch said about the playlist is worth keeping, except what it
+  // said about the bytes: the body is a different length now, and may have
+  // arrived compressed. Carrying those over describes a body that no longer
+  // exists.
+  for (const name of ["content-length", "content-encoding", "content-range", "transfer-encoding"]) {
+    headers.delete(name);
+  }
   headers.set("Content-Type", HLS_MIME);
   headers.set("X-Ads-Remove-Source", source);
   return new Response(text, {

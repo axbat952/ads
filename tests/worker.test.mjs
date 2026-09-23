@@ -327,6 +327,29 @@ describe("what the player gets back", () => {
     stop();
   });
 
+  it("drops what the original said about its bytes", async () => {
+    // The headers are Twitch's, the body is not: it has a different length and
+    // may have arrived compressed. Carrying those over describes a body that
+    // no longer exists.
+    const scope = fakeScope([]);
+    scope.fetch = async () =>
+      new Response(preroll(), {
+        status: 200,
+        headers: {
+          "Content-Length": "999999",
+          "Content-Encoding": "gzip",
+          "X-Twitch-Hint": "42",
+        },
+      });
+
+    const { stop } = installHook(scope);
+    const out = await scope.fetch(VRAIE_MEDIA);
+    assert.equal(out.headers.get("Content-Length"), null);
+    assert.equal(out.headers.get("Content-Encoding"), null);
+    assert.equal(out.headers.get("X-Twitch-Hint"), "42", "the rest is kept");
+    stop();
+  });
+
   it("hands back a body the player can still read", async () => {
     const body = direct();
     const { scope } = scopeWithHeaders(body);
