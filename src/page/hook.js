@@ -166,6 +166,9 @@
       return;
     }
     if (data.key === "ADS_Stats") {
+      // The watchdog needs this: a reload during a break buys a fresh preroll
+      // and unsticks nothing.
+      engineInBreak = Boolean(data.stats && data.stats.inBreak);
       // One line the first time a stream is seen: proof the interception works
       // end to end, without exposing a global object the page could read.
       if (data.stats && data.stats.channel && !announcedChannels.has(data.stats.channel)) {
@@ -470,12 +473,22 @@
    * has been hidden for a while — precisely the case this exists for. Media
    * events carry no such penalty, so every one of them is a chance to act.
    */
-  const STALL_SECONDS = 12;
-  const STALL_RELOAD_COOLDOWN = 45;
+  /**
+   * How long a picture has to be stuck before the player is reloaded.
+   *
+   * Generous on purpose. Measured stalls of two and three seconds recovered on
+   * their own, and a reload is not free: it starts a new session, which Twitch
+   * may greet with a preroll. Waiting this long means only a freeze that was
+   * never going to clear gets paid for.
+   */
+  const STALL_SECONDS = 25;
+  const STALL_RELOAD_COOLDOWN = 60;
 
   let stalledSince = 0;
   let lastStallReload = 0;
   let stallAnnounced = false;
+  /** Whether the engine says an ad break is running, from its own telemetry. */
+  let engineInBreak = false;
 
   function currentVideo() {
     return document.querySelector("video");
@@ -563,6 +576,13 @@
         event: { type: "pictureStuck", seconds: Math.round(stuck), hidden },
       });
     }
+
+    // Never during a break. A reload starts a new playback session, and Twitch
+    // greets a new session with a preroll — so reloading through an ad trades a
+    // stuck picture for another ad, and can do it again on the next stall. The
+    // engine has its own reload policy for breaks, with a cap per break; this
+    // one exists for a picture stuck on live content.
+    if (engineInBreak) return;
 
     const t = Date.now() / 1000;
     if (t - lastStallReload < STALL_RELOAD_COOLDOWN) return;
