@@ -391,6 +391,10 @@ export function createBlocker({
           label: feed.playerType,
           obtainedAt: now(),
           quality: feed.quality,
+          // The resolution, beside the label. Two masters name the same
+          // rendition differently — one carries `NAME`, the other falls back
+          // to the resolution — so the labels cannot be compared.
+          resolution: feed.variant ? feed.variant.resolution : "",
         };
         counters.lastSearchMs = Math.round((now() - started) * 1000);
         return feed;
@@ -425,6 +429,7 @@ export function createBlocker({
       label: feed.playerType,
       obtainedAt: now(),
       quality: feed.quality,
+      resolution: feed.variant ? feed.variant.resolution : "",
     };
     log("info", `clean feed found via ${feed.playerType} in ${counters.lastSearchMs}ms (${feed.quality})`);
     onEvent({
@@ -498,13 +503,24 @@ export function createBlocker({
       counters.usefulReloads += 1;
       watchingReload = false;
     }
-    // What the player asked for, beside what it is getting. A replacement of a
-    // different resolution is spliced into the same buffer across a
-    // discontinuity, twice per break — it is the leading suspect for the short
-    // repeated stalls, and it was never measured.
-    const asked = state.variant ? qualityLabel(state.variant.variant) : "";
-    onEvent({ type: "swap", label: entry.label, quality: entry.quality, wanted: asked });
-    return serve(url, body, `backup:${entry.url}`);
+    // One line per swap, not one per poll. The engine re-serves the backup
+    // every two seconds for the length of the break, and reporting each of
+    // those buried everything else in the log.
+    const source = `backup:${entry.url}`;
+    if (state.serving !== source) {
+      const asked = state.variant ? state.variant.variant : null;
+      onEvent({
+        type: "swap",
+        label: entry.label,
+        quality: entry.quality,
+        // Resolutions, because that is what the player has to splice. Comparing
+        // the labels reported a change on every swap when there was none: the
+        // two masters name the same rendition differently.
+        wanted: asked ? asked.resolution : "",
+        served: entry.resolution || "",
+      });
+    }
+    return serve(url, body, source);
   }
 
   // -- fallback: strip the ad segments ------------------------------------
