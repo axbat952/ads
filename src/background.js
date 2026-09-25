@@ -230,7 +230,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       // given up, or neither? The console carried them; this log is what gets
       // read after the fact, and it is the one that survives a reload.
       else if (event.type === "pictureStuck") {
-        note("error", `picture stuck ${event.seconds}s (${where(event.hidden)})`);
+        note(
+          "error",
+          `picture stuck ${event.seconds}s (${where(event.hidden)}${event.gone ? ", player gone" : ""})`,
+        );
       } else if (event.type === "pictureRecovered") {
         note("info", `picture recovered after ${event.seconds}s`);
       } else if (event.type === "slowHold") {

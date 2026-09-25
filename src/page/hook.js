@@ -464,35 +464,29 @@
   // -- 5. watching the picture ---------------------------------------------
 
   /**
-   * Watch the element the user actually looks at.
+   * Watch whether the picture is ADVANCING — not whether the browser is
+   * complaining.
    *
-   * Every measurement so far lived in the worker, and the worker is exactly
-   * what the player tears down when it gives up — so a freeze erased its own
-   * evidence. This lives in the page, which survives that, and it listens to
-   * the media events the browser fires when a picture starves: `waiting` and
-   * `stalled`. Those are not timers, so a throttled background tab does not
-   * delay them.
+   * The first version listened for `waiting` and `stalled` and missed a twenty
+   * minute freeze entirely. When the player gives up completely it does not
+   * starve, it dies: the worker stops, the media events stop, and in the end
+   * the `<video>` element itself is gone. There is nothing left to fire an
+   * event, and a watchdog waiting for one waits for ever.
    *
-   * It also acts. A stream stuck for this long needs a reload either way; the
-   * user was doing it by hand.
+   * `currentTime` moving is the only signal that means the user is seeing
+   * something. It is read from `timeupdate`, which the browser fires several
+   * times a second while a picture plays and not at all when it does not — so
+   * silence is itself the measurement, and no timer is needed to observe it.
    *
-   * The decision is taken in the event handlers, not only on a tick. The tick
-   * is a `setInterval`, which Chrome throttles to once a minute in a page that
-   * has been hidden for a while — precisely the case this exists for. Media
-   * events carry no such penalty, so every one of them is a chance to act.
-   */
-  /**
-   * How long a picture has to be stuck before the player is reloaded.
-   *
-   * Generous on purpose. Measured stalls of two and three seconds recovered on
-   * their own, and a reload is not free: it starts a new session, which Twitch
-   * may greet with a preroll. Waiting this long means only a freeze that was
-   * never going to clear gets paid for.
+   * The tick only has to notice that silence. Chrome throttles it to once a
+   * minute in a page hidden for a while, which is late for a twelve second
+   * stall and irrelevant for a twenty minute one.
    */
   const STALL_SECONDS = 25;
   const STALL_RELOAD_COOLDOWN = 60;
 
-  let stalledSince = 0;
+  let lastAdvance = 0;
+  let lastSeenTime = -1;
   let lastStallReload = 0;
   let stallAnnounced = false;
   /** Whether the engine says an ad break is running, from its own telemetry. */
@@ -502,94 +496,70 @@
     return document.querySelector("video");
   }
 
-  function pictureMoving() {
+  /** Is this a channel page, where a picture is supposed to be playing? */
+  function shouldBePlaying() {
+    return Boolean(channelFromAddress());
+  }
+
+  /** Note any progress, and return whether the picture is moving. */
+  function sampleProgress() {
     const video = currentVideo();
-    return Boolean(video) && !video.paused && video.readyState >= 3;
-  }
-
-  function onStarved(what) {
-    if (!stalledSince) {
-      stalledSince = Date.now() / 1000;
-      stallAnnounced = false;
-      console.info(`${TAG} picture starved (${what}, tab ${document.visibilityState})`);
+    if (!video) return false;
+    if (video.currentTime !== lastSeenTime) {
+      lastSeenTime = video.currentTime;
+      lastAdvance = Date.now() / 1000;
+      return true;
     }
-    // A second `waiting` while already starved is the only heartbeat available
-    // in a throttled tab: take the opportunity to decide.
-    checkStall();
-  }
-
-  function onFlowing() {
-    if (!stalledSince) return;
-    const held = Math.round((Date.now() / 1000 - stalledSince) * 10) / 10;
-    stalledSince = 0;
-    stallAnnounced = false;
-    if (held >= 2) {
-      console.info(`${TAG} picture recovered after ${held}s`);
-      toExtension("event", { event: { type: "pictureRecovered", seconds: held } });
-    }
+    return false;
   }
 
   /**
-   * Media events do not bubble, but they do capture — one listener on the
-   * document catches them from whatever `<video>` the player has built, and
-   * there is no element to re-attach to when it builds a new one.
+   * A picture paused on purpose is not a picture that stopped. The two are told
+   * apart by the data on hand: a deliberate pause leaves a full buffer, a
+   * player that has given up has nothing to play.
    */
-  function watchPicture() {
-    for (const name of ["waiting", "stalled"]) {
-      document.addEventListener(name, () => onStarved(name), true);
-    }
-    for (const name of ["playing", "timeupdate"]) {
-      document.addEventListener(name, () => onFlowing(), true);
-    }
-
-    // The player pausing itself is not the user pausing it, and it is what a
-    // player does when it gives up on a timeline it cannot follow — which is
-    // how a freeze escaped this watchdog entirely: `waiting` never fired.
-    //
-    // The two are told apart by the data on hand. A deliberate pause leaves a
-    // full buffer; a player that has given up has nothing to play. Without
-    // that guard, pausing a stream on purpose would have it reloaded from
-    // under you twelve seconds later.
-    for (const name of ["pause", "suspend", "emptied", "error"]) {
-      document.addEventListener(
-        name,
-        () => {
-          const video = currentVideo();
-          if (video && video.readyState < 3) onStarved(name);
-        },
-        true,
-      );
-    }
-
-    setInterval(tick, 2000);
-    document.addEventListener("visibilitychange", tick);
+  function pausedByChoice() {
+    const video = currentVideo();
+    return Boolean(video) && video.paused && video.readyState >= 3;
   }
 
-  /** Has the picture moved since we last looked? */
   function checkStall() {
-    if (!enabled || !stalledSince) return;
-    if (pictureMoving()) {
-      onFlowing();
+    if (!enabled || !shouldBePlaying()) return;
+    if (sampleProgress()) {
+      if (stallAnnounced) {
+        const held = Math.round(Date.now() / 1000 - lastAdvance);
+        stallAnnounced = false;
+        console.info(`${TAG} picture moving again`);
+        toExtension("event", { event: { type: "pictureRecovered", seconds: Math.max(held, 0) } });
+      }
+      return;
+    }
+    if (pausedByChoice()) {
+      lastAdvance = Date.now() / 1000; // paused on purpose: the clock does not run
+      return;
+    }
+    if (!lastAdvance) {
+      lastAdvance = Date.now() / 1000; // nothing has played yet; start the clock
       return;
     }
 
-    const stuck = Date.now() / 1000 - stalledSince;
+    const stuck = Date.now() / 1000 - lastAdvance;
     if (stuck < STALL_SECONDS) return;
 
     if (!stallAnnounced) {
       stallAnnounced = true;
       const hidden = document.visibilityState === "hidden";
+      const gone = !currentVideo();
       console.info(`${TAG} picture stuck for ${Math.round(stuck)}s (tab ${hidden ? "hidden" : "visible"})`);
       toExtension("event", {
-        event: { type: "pictureStuck", seconds: Math.round(stuck), hidden },
+        event: { type: "pictureStuck", seconds: Math.round(stuck), hidden, gone },
       });
     }
 
     // Never during a break. A reload starts a new playback session, and Twitch
     // greets a new session with a preroll — so reloading through an ad trades a
-    // stuck picture for another ad, and can do it again on the next stall. The
-    // engine has its own reload policy for breaks, with a cap per break; this
-    // one exists for a picture stuck on live content.
+    // stuck picture for another ad. The engine has its own reload policy for
+    // breaks, with a cap per break; this one is for live content.
     if (engineInBreak) return;
 
     const t = Date.now() / 1000;
@@ -600,15 +570,15 @@
     toExtension("event", { event: { type: "reloadPerformed", reason: "picture stuck", how } });
   }
 
-  function tick() {
-    if (!enabled) return;
-    if (!stalledSince) {
-      // Belt and braces: a picture can stop without any event firing at all.
-      const video = currentVideo();
-      if (video && video.readyState < 3 && video.currentTime > 0) onStarved("readyState");
-      return;
+  function watchPicture() {
+    // `timeupdate` is the heartbeat: several a second while the picture plays,
+    // none at all when it stops. The others are only early warnings.
+    document.addEventListener("timeupdate", () => sampleProgress(), true);
+    for (const name of ["waiting", "stalled", "pause", "suspend", "emptied", "error", "playing"]) {
+      document.addEventListener(name, () => checkStall(), true);
     }
-    checkStall();
+    setInterval(checkStall, 2000);
+    document.addEventListener("visibilitychange", () => checkStall());
   }
 
   // -- 6. the off switch --------------------------------------------------

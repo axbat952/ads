@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { backoffAfter, createBlocker } from "../src/lib/blocker.js";
+import { BREAK_GRACE, backoffAfter, createBlocker } from "../src/lib/blocker.js";
 import { parseMedia, readMediaSequence } from "../src/lib/hls.js";
 import { direct, fetcher, clock, master, midroll, preroll } from "./helpers.mjs";
 
@@ -706,5 +706,51 @@ describe("the discontinuity stays on its segment", () => {
     const { blocker } = setup({ clean: ["popout"] });
     const swapped = await blocker.onMedia(URL_MEDIA, preroll());
     assert.equal((swapped.match(/#EXT-X-DISCONTINUITY\b/g) || []).length, 1);
+  });
+});
+
+describe("one break, not one per rendition", () => {
+  /**
+   * The player polls two or three renditions at once and each crosses into the
+   * break a second apart. Counting per URL turned one pod into two or three:
+   * the log said AD #1, #2, #3 for a single break, and the tally, the ad time
+   * and the per-channel figures were inflated by however many renditions
+   * happened to be in play.
+   */
+  const URL_A = `${ORIGINE}/chunked.m3u8`;
+  const URL_B = `${ORIGINE}/720p60.m3u8`;
+  const URL_C = `${ORIGINE}/360p30.m3u8`;
+
+  it("counts a pod once, whatever the player is polling", async () => {
+    const { blocker, events } = setup({ clean: [] });
+    for (const url of [URL_A, URL_B, URL_C]) await blocker.onMedia(url, preroll());
+
+    assert.equal(blocker.stats().breaks, 1, "one break, three renditions");
+    assert.equal(events.filter((e) => e.type === "break").length, 1, "and one event");
+  });
+
+  it("announces the end once, when the last rendition is out", async () => {
+    const { blocker, events } = setup({ clean: [] });
+    for (const url of [URL_A, URL_B]) await blocker.onMedia(url, preroll());
+
+    await blocker.onMedia(URL_A, direct("a"));
+    assert.equal(
+      events.filter((e) => e.type === "breakOver").length,
+      0,
+      "the other rendition is still in the break",
+    );
+
+    await blocker.onMedia(URL_B, direct("b"));
+    assert.equal(events.filter((e) => e.type === "breakOver").length, 1);
+  });
+
+  it("still counts two breaks that are genuinely apart", async () => {
+    const { blocker, time } = setup({ clean: [] });
+    await blocker.onMedia(URL_A, preroll());
+    await blocker.onMedia(URL_A, direct("a"));
+
+    time.t += BREAK_GRACE + 5;
+    await blocker.onMedia(URL_A, preroll());
+    assert.equal(blocker.stats().breaks, 2);
   });
 });

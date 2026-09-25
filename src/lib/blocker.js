@@ -71,6 +71,13 @@ export const MAX_URLS = 64;
 /** Past this, a memorised backup body has no chance of being useful. */
 export const BODY_STALE = 30;
 
+/**
+ * Two renditions crossing into a break within this window are the same break.
+ *
+ * Measured: the player's playlists enter a break one or two seconds apart.
+ */
+export const BREAK_GRACE = 10;
+
 /** Never two reloads back to back: that would be an unbearable loop. */
 export const RELOAD_COOLDOWN = 25;
 /** And never more than two attempts for the same break. */
@@ -595,26 +602,41 @@ export function createBlocker({
     const isInBreak = isAdBreak(playlist);
 
     if (isInBreak && !wasInBreak) {
-      counters.breaks += 1;
       reloadsThisBreak = 0;
-      const first = playlist.adBreaks[0];
-      lastBreak = {
-        at: now(),
-        // `roll`, never `type`: two names for the same thing once silently
-        // overwrote the event type.
-        roll: rollType(playlist) || "?",
-        duration: first ? first.duration : 0,
-        spots: first ? first.podLength : 0,
-      };
-      log("warning", `>> AD #${counters.breaks} (${lastBreak.roll}, ${Math.round(lastBreak.duration)}s, pod=${lastBreak.spots})`);
-      onEvent({ type: "break", roll: lastBreak.roll, duration: lastBreak.duration, spots: lastBreak.spots });
+      // A break belongs to the channel, not to one playlist URL. The player
+      // polls two or three renditions and each one crosses into the break a
+      // second or so apart, so counting per URL turned every break into two or
+      // three: the log said AD #1, #2, #3 for a single pod, and the tally, the
+      // ad time and the per-channel figures were inflated by however many
+      // renditions happened to be in play.
+      if (!lastBreak || now() - lastBreak.at > BREAK_GRACE) {
+        counters.breaks += 1;
+        const first = playlist.adBreaks[0];
+        lastBreak = {
+          at: now(),
+          // `roll`, never `type`: two names for the same thing once silently
+          // overwrote the event type.
+          roll: rollType(playlist) || "?",
+          duration: first ? first.duration : 0,
+          spots: first ? first.podLength : 0,
+        };
+        log("warning", `>> AD #${counters.breaks} (${lastBreak.roll}, ${Math.round(lastBreak.duration)}s, pod=${lastBreak.spots})`);
+        onEvent({ type: "break", roll: lastBreak.roll, duration: lastBreak.duration, spots: lastBreak.spots });
+      }
     } else if (wasInBreak && !isInBreak) {
-      log("info", "<< ad break over — back to live");
       endOfBreak(state);
       // Live came back on its own; the reload, if any, may have nothing to do
       // with it, so stop watching.
       watchingReload = false;
-      onEvent({ type: "breakOver" });
+      // Announced once too: the renditions leave the break a few seconds apart,
+      // and one of the logs had the same break ending twice, 55s apart.
+      // This URL's flag is only cleared further down, so it is excluded here
+      // rather than read: what matters is whether any OTHER rendition is still
+      // in the break.
+      if (live().every((u) => u === url || !stateOf(u).inBreak)) {
+        log("info", "<< ad break over — back to live");
+        onEvent({ type: "breakOver" });
+      }
     }
 
     // Cumulated ad time. Only URLs the player still polls are considered:
