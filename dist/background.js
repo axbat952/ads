@@ -232,7 +232,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       else if (event.type === "pictureStuck") {
         note(
           "error",
-          `picture stuck ${event.seconds}s (${where(event.hidden)}${event.gone ? ", player gone" : ""})`,
+          `picture stuck ${event.seconds}s (${where(event.hidden)}, ${event.videos || 0} video element(s))`,
         );
       } else if (event.type === "pictureRecovered") {
         note("info", `picture recovered after ${event.seconds}s`);

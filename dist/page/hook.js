@@ -492,8 +492,34 @@
   /** Whether the engine says an ad break is running, from its own telemetry. */
   let engineInBreak = false;
 
+  /**
+   * The player's own video element, which is the biggest one on the page.
+   *
+   * `document.querySelector("video")` returns the FIRST in document order, and
+   * a Twitch page has several: the sidebar carries preview players that play on
+   * their own. Watching one of those meant `currentTime` was always advancing
+   * and the main picture could be frozen for twenty minutes without a word —
+   * which is exactly what happened. The previous watchdog survived the same
+   * mistake because it listened for events from any element; this one reads a
+   * single one, so it has to be the right one.
+   */
   function currentVideo() {
-    return document.querySelector("video");
+    let best = null;
+    let bestArea = -1;
+    for (const video of document.querySelectorAll("video")) {
+      let area = 0;
+      try {
+        const box = video.getBoundingClientRect();
+        area = box.width * box.height;
+      } catch {
+        area = 0;
+      }
+      if (area > bestArea) {
+        bestArea = area;
+        best = video;
+      }
+    }
+    return best;
   }
 
   /** Is this a channel page, where a picture is supposed to be playing? */
@@ -549,10 +575,10 @@
     if (!stallAnnounced) {
       stallAnnounced = true;
       const hidden = document.visibilityState === "hidden";
-      const gone = !currentVideo();
+      const videos = document.querySelectorAll("video").length;
       console.info(`${TAG} picture stuck for ${Math.round(stuck)}s (tab ${hidden ? "hidden" : "visible"})`);
       toExtension("event", {
-        event: { type: "pictureStuck", seconds: Math.round(stuck), hidden, gone },
+        event: { type: "pictureStuck", seconds: Math.round(stuck), hidden, videos },
       });
     }
 
