@@ -192,7 +192,15 @@
       } else if (event.type === "break") {
         console.info(`${TAG} ad break ${event.roll || "?"} ${Math.round(event.duration || 0)}s (${event.spots || 0} spot(s))`);
       } else if (event.type === "swap") {
-        console.info(`${TAG} feed replaced via ${event.label} (${event.quality})`);
+        const swap = event.wanted && event.wanted !== event.quality
+          ? `${event.wanted} -> ${event.quality}`
+          : event.quality;
+        console.info(`${TAG} feed replaced via ${event.label} (${swap})`);
+        if (event.wanted && event.wanted !== event.quality) {
+          toExtension("event", {
+            event: { type: "qualityChanged", wanted: event.wanted, served: event.quality },
+          });
+        }
       } else if (event.type === "slowHold") {
         console.info(
           `${TAG} playlist held ${(event.ms / 1000).toFixed(1)}s` +

@@ -498,7 +498,12 @@ export function createBlocker({
       counters.usefulReloads += 1;
       watchingReload = false;
     }
-    onEvent({ type: "swap", label: entry.label, quality: entry.quality });
+    // What the player asked for, beside what it is getting. A replacement of a
+    // different resolution is spliced into the same buffer across a
+    // discontinuity, twice per break — it is the leading suspect for the short
+    // repeated stalls, and it was never measured.
+    const asked = state.variant ? qualityLabel(state.variant.variant) : "";
+    onEvent({ type: "swap", label: entry.label, quality: entry.quality, wanted: asked });
     return serve(url, body, `backup:${entry.url}`);
   }
 

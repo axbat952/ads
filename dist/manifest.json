@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Twitch Ads Remove",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "description": "Removes Twitch ads by serving an ad-free copy of the same stream, and hides the ad when none exists.",
   "permissions": [
     "storage"

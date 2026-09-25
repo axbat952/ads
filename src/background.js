@@ -237,6 +237,8 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         note("warning", `playlist held ${(event.ms / 1000).toFixed(1)}s (${where(event.hidden)})`);
       } else if (event.type === "playerStopped") {
         note("warning", `player stopped asking for playlists ${event.after}s ago (${where(event.hidden)})`);
+      } else if (event.type === "qualityChanged") {
+        note("warning", `replacement is a different rendition: ${event.wanted} -> ${event.served}`);
       } else if (event.type === "pollResumed") {
         note("info", `player is asking again, after ${event.after}s`);
       }
