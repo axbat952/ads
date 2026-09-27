@@ -338,6 +338,18 @@ export function countSegments(text) {
 }
 
 /**
+ * Low-latency segments announced ahead of the playlist.
+ *
+ * A Twitch playlist ends with two `#EXT-X-TWITCH-PREFETCH` lines: the next two
+ * segments, before they are listed. The player downloads them early and files
+ * them under the sequence numbers that follow the last full segment — so it can
+ * hold two segments the playlist has not named yet.
+ */
+export function countPrefetch(text) {
+  return (String(text).match(/^#EXT-X-TWITCH-PREFETCH:/gm) || []).length;
+}
+
+/**
  * Insert `#EXT-X-DISCONTINUITY` before the first segment.
  *
  * Required on every source switch. Segments then come from another playback

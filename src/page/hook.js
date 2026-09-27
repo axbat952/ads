@@ -551,9 +551,12 @@
 
   function checkStall() {
     if (!enabled || !shouldBePlaying()) return;
+    // Read before sampling: a picture that moves again resets `lastAdvance`,
+    // and measuring after that always reported a recovery of zero seconds.
+    const stoppedAt = lastAdvance;
     if (sampleProgress()) {
       if (stallAnnounced) {
-        const held = Math.round(Date.now() / 1000 - lastAdvance);
+        const held = Math.round(Date.now() / 1000 - stoppedAt);
         stallAnnounced = false;
         console.info(`${TAG} picture moving again`);
         toExtension("event", { event: { type: "pictureRecovered", seconds: Math.max(held, 0) } });

@@ -51,13 +51,18 @@ export const REQUEST_TIMEOUT_MS = 4000;
 /**
  * Past this, the hook held the player's own request long enough to matter.
  *
+ * Above `FIRST_WAIT` on purpose. At the start of a break the engine holds the
+ * request for up to 2.5s by design while the search runs, and with the fetch on
+ * top that reached three seconds — so every break wrote a warning about a hold
+ * that was working as intended.
+ *
  * The player polls every two seconds and has only a few seconds of buffer, so
  * anything above this is worth a line in the log — it is the one measurement
  * that separates "the extension is holding the response" from "the stream
  * stopped for its own reasons", and the log said nothing at all about a freeze
  * that only happened in a background tab.
  */
-export const HOLD_WARN_MS = 3000;
+export const HOLD_WARN_MS = 5000;
 
 /**
  * Past this without a single playlist request, the player has stopped asking.

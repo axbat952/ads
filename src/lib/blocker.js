@@ -17,6 +17,7 @@
  */
 
 import {
+  countPrefetch,
   countSegments,
   hasAdMarkers,
   isAdBreak,
@@ -324,7 +325,24 @@ export function createBlocker({
     }
 
     if (state.sequenceOffset !== 0) out = writeMediaSequence(out, served);
-    state.lastSequence = Math.max(state.lastSequence, served + Math.max(0, countSegments(body) - 1));
+    // The highest number the player can already HOLD, which is not the last
+    // listed segment: it has also downloaded the prefetch segments that follow.
+    //
+    // This is what froze the picture on the return to live. The next source was
+    // numbered from the last listed segment, so its first two segments took the
+    // numbers of the two the player had just prefetched from the old one. The
+    // player kept what it had and dropped the new ones as duplicates — and with
+    // them the discontinuity written in front of the first. The next segment
+    // then arrived from another session with no discontinuity announced, landed
+    // at the wrong place in the timeline, and the picture stopped once the two
+    // prefetched segments had played: one to four seconds after the switch,
+    // which is exactly the delay every log showed.
+    //
+    // Numbering past them leaves a gap instead of a collision. A live playlist
+    // that jumps forward is one the player skips along; one that reuses numbers
+    // is one it cannot follow.
+    const listed = Math.max(0, countSegments(body) - 1);
+    state.lastSequence = Math.max(state.lastSequence, served + listed + countPrefetch(body));
     return out;
   }
 

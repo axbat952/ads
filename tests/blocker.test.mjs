@@ -754,3 +754,60 @@ describe("one break, not one per rendition", () => {
     assert.equal(blocker.stats().breaks, 2);
   });
 });
+
+describe("a source switch never reuses a prefetched number", () => {
+  /**
+   * A Twitch playlist ends with two prefetch segments the player downloads
+   * ahead. Numbering the next source from the last LISTED segment gave its first
+   * two segments the numbers of those prefetched ones: the player kept what it
+   * had, dropped the new ones as duplicates, and the discontinuity in front of
+   * the first went with them. The next segment came from another session with
+   * no discontinuity announced, and the picture stopped once the two prefetched
+   * segments had played — one to four seconds after the return to live.
+   */
+  function liveWithPrefetch(first) {
+    return [
+      "#EXTM3U",
+      "#EXT-X-VERSION:3",
+      "#EXT-X-TARGETDURATION:3",
+      `#EXT-X-MEDIA-SEQUENCE:${first}`,
+      "#EXTINF:2.000,live",
+      `https://cdn.example/a-${first}.ts`,
+      "#EXTINF:2.000,live",
+      `https://cdn.example/a-${first + 1}.ts`,
+      "#EXTINF:2.000,live",
+      `https://cdn.example/a-${first + 2}.ts`,
+      `#EXT-X-TWITCH-PREFETCH:https://cdn.example/a-${first + 3}.ts`,
+      `#EXT-X-TWITCH-PREFETCH:https://cdn.example/a-${first + 4}.ts`,
+      "",
+    ].join("\n");
+  }
+
+  it("numbers the new source after the segments the player prefetched", async () => {
+    const { blocker } = setup({ clean: ["popout"] });
+
+    // Listed 100..102, prefetched 103 and 104: the player may hold up to 104.
+    await blocker.onMedia(URL_MEDIA, liveWithPrefetch(100));
+
+    const swapped = await blocker.onMedia(URL_MEDIA, preroll());
+    assert.ok(swapped.includes("clean-0.ts"), "the replacement feed is served");
+    assert.equal(
+      readMediaSequence(swapped),
+      105,
+      "103 and 104 are already taken by the prefetched segments",
+    );
+  });
+
+  it("does the same on the way back to live", async () => {
+    // The replacement feed carries its own prefetch segments, so the return
+    // has the same collision waiting for it in the other direction.
+    const { blocker } = setup({ clean: ["popout"], cleanBody: liveWithPrefetch(500) });
+
+    await blocker.onMedia(URL_MEDIA, liveWithPrefetch(100)); // may hold up to 104
+    const swapped = await blocker.onMedia(URL_MEDIA, preroll());
+    assert.equal(readMediaSequence(swapped), 105, "replacement listed 105..107, prefetched 108, 109");
+
+    const back = await blocker.onMedia(URL_MEDIA, liveWithPrefetch(130));
+    assert.equal(readMediaSequence(back), 110, "live resumes after 109, not at 108");
+  });
+});
