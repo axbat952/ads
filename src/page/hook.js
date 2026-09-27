@@ -591,6 +591,17 @@
     // breaks, with a cap per break; this one is for live content.
     if (engineInBreak) return;
 
+    // Never in a hidden tab either: wait for the user to come back, then act at
+    // once. Measured: a reload in a hidden tab took 121 seconds and a second
+    // reload to recover, the new player asking for a playlist once a minute in
+    // between. Chrome throttles the timers of a hidden page unless it is playing
+    // sound, and a reloaded player has not started playing yet — so it gets no
+    // exemption and cannot even start. The player it replaced at least had a
+    // buffer. Coming back to the tab fires `visibilitychange`, which runs this
+    // check with the stall already past its threshold, so the reload happens
+    // the moment it can work.
+    if (document.visibilityState === "hidden") return;
+
     const t = Date.now() / 1000;
     if (t - lastStallReload < STALL_RELOAD_COOLDOWN) return;
     lastStallReload = t;
