@@ -741,7 +741,13 @@ ${event.body}`);
   function watchPicture() {
     // `timeupdate` is the heartbeat: several a second while the picture plays,
     // none at all when it stops. The others are only early warnings.
-    document.addEventListener("timeupdate", () => sampleProgress(), true);
+    //
+    // It goes through `checkStall`, never straight to `sampleProgress`. The
+    // first heartbeat after a stall is the moment of recovery, and sampling
+    // there directly moved the clock forward before the recovery could be
+    // measured: every recovery then read as lasting about one second, however
+    // long the picture had actually been stopped.
+    document.addEventListener("timeupdate", () => checkStall(), true);
     for (const name of ["waiting", "stalled", "pause", "suspend", "emptied", "error", "playing"]) {
       document.addEventListener(name, () => checkStall(), true);
     }
