@@ -582,6 +582,9 @@ ${event.body}`);
   /** Remedies already tried on the current stall, so each is tried once. */
   let nudgedThisStall = false;
   let lastRemedy = "";
+  /** When we last paused the player ourselves, and how long that lasts. */
+  let nudgedAt = 0;
+  const NUDGE_GRACE = 3;
   /** Whether the engine says an ad break is running, from its own telemetry. */
   let engineInBreak = false;
 
@@ -638,6 +641,10 @@ ${event.body}`);
    * player that has given up has nothing to play.
    */
   function pausedByChoice() {
+    // Our own pause/play is not the user's pause. Taken for one, it reset the
+    // stall clock: the recovery was then reported as lasting 0s, and the
+    // escalation to a reload was pushed back by as long as the nudge had taken.
+    if (Date.now() / 1000 - nudgedAt < NUDGE_GRACE) return false;
     const video = currentVideo();
     return Boolean(video) && video.paused && video.readyState >= 3;
   }
@@ -681,6 +688,7 @@ ${event.body}`);
     //    break: it opens no session, so there is no preroll to buy.
     if (!nudgedThisStall) {
       nudgedThisStall = true;
+      nudgedAt = Date.now() / 1000;
       const how = nudgePlayer();
       lastRemedy = "pause/play";
       const hidden = document.visibilityState === "hidden";

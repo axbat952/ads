@@ -11,7 +11,7 @@
     "switch": "node tests/switch.mjs",
     "playback": "node tests/playback.mjs"
   },
-  "version": "1.2.5",
+  "version": "1.2.6",
   "engines": {
     "node": ">=22"
   }
