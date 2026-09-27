@@ -11,6 +11,14 @@
  * 3. Reload the player on request, and hide an ad that cannot be replaced.
  * 4. Obey the off switch, including on the very first line of a page load.
  *
+ * The player's own token request is deliberately left untouched. Rewriting its
+ * `playerType` from `site` to `popout` is TwitchAdSolutions' default, meant to
+ * make breaks rarer at the source. It plays correctly (11 starts out of 11),
+ * but no reduction in breaks could be measured: ad frequency on one channel
+ * swung from a preroll on 8 starts out of 8 to none on 6 out of 6 within the
+ * hour, which swamps any difference between the two. An intervention on the
+ * player's own session is not worth making for a benefit that cannot be shown.
+ *
  * No credentials ever leave the page. The player's OAuth token was harvested at
  * one point to pass it to the worker: that was both useless (Twitch then serves
  * the same campaign to every `playerType`) and unwise (broadcasting a secret on
@@ -189,6 +197,9 @@
         console.info(`${TAG} no clean feed: ${(event.attempts || []).map((a) => a.join("=")).join(", ")}`);
       } else if (event.type === "traceFetch") {
         console.info(`${TAG} trace ${event.url}`);
+      } else if (event.type === "traceServe") {
+        console.info(`${TAG} served#${event.n} ${event.source} ${event.url}
+${event.body}`);
       } else if (event.type === "break") {
         console.info(`${TAG} ad break ${event.roll || "?"} ${Math.round(event.duration || 0)}s (${event.spots || 0} spot(s))`);
       } else if (event.type === "swap") {
@@ -325,6 +336,64 @@
   }
 
   /**
+   * The Twitch player's own media-player instance.
+   *
+   * Found the way TwitchAdSolutions finds it: the component carrying
+   * `setPlayerActive` holds it in `props.mediaPlayerInstance`, sometimes one
+   * level down in `playerInstance`.
+   */
+  function mediaPlayer() {
+    try {
+      const root = reactRoot();
+      if (!root) return null;
+      const holder = findReactNode(
+        root,
+        (n) => n && typeof n.setPlayerActive === "function" && n.props && n.props.mediaPlayerInstance,
+      );
+      let player = holder ? holder.props.mediaPlayerInstance : null;
+      if (player && player.playerInstance) player = player.playerInstance;
+      return player && typeof player.play === "function" ? player : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Pause then play: the cheap remedy, tried before any reload.
+   *
+   * It makes the player drop its position and resynchronise on the live edge,
+   * without a new playback session — so no new access token, and no preroll.
+   * TwitchAdSolutions ships this as its default fix for exactly the freeze a
+   * playlist swap causes, and documents that it "often fixes" it. A reload is
+   * heavier on every count: it costs a preroll, and in a hidden tab the new
+   * player cannot even start.
+   */
+  function nudgePlayer() {
+    const player = mediaPlayer();
+    if (player) {
+      try {
+        player.pause();
+        player.play();
+        return "player:pause-play";
+      } catch {
+        /* fall through to the element */
+      }
+    }
+    const video = currentVideo();
+    if (video) {
+      try {
+        video.pause();
+        const playing = video.play();
+        if (playing && typeof playing.catch === "function") playing.catch(() => {});
+        return "video:pause-play";
+      } catch {
+        /* nothing more to try */
+      }
+    }
+    return "none";
+  }
+
+  /**
    * Start a new playback session.
    *
    * `setSrc({isNewMediaPlayerInstance: true})` is the Twitch player's own
@@ -338,6 +407,18 @@
         const playerState = findReactNode(root, (n) => n && typeof n.setSrc === "function");
         if (playerState) {
           playerState.setSrc({ isNewMediaPlayerInstance: true, refreshAccessToken: true });
+          // And ask it to play. `setSrc` builds a new player that is not
+          // necessarily told to start, which is how a reload in a hidden tab
+          // left one asking for a playlist once a minute. TwitchAdSolutions
+          // calls `play()` straight after the same call.
+          const player = mediaPlayer();
+          if (player) {
+            try {
+              player.play();
+            } catch {
+              /* the player may not be ready yet; it will start on its own */
+            }
+          }
           return "react:setSrc";
         }
         const player = findReactNode(
@@ -485,10 +566,22 @@
   const STALL_SECONDS = 25;
   const STALL_RELOAD_COOLDOWN = 60;
 
+  /**
+   * First remedy, and a cheap one: pause/play after this long.
+   *
+   * Early, because it costs nothing — no new session, no preroll — and it can
+   * be used in a hidden tab, where a reload cannot. The reload stays in reserve
+   * for a picture still stuck at `STALL_SECONDS`, and only in a visible tab.
+   */
+  const STALL_NUDGE_SECONDS = 6;
+
   let lastAdvance = 0;
   let lastSeenTime = -1;
   let lastStallReload = 0;
   let stallAnnounced = false;
+  /** Remedies already tried on the current stall, so each is tried once. */
+  let nudgedThisStall = false;
+  let lastRemedy = "";
   /** Whether the engine says an ad break is running, from its own telemetry. */
   let engineInBreak = false;
 
@@ -555,12 +648,16 @@
     // and measuring after that always reported a recovery of zero seconds.
     const stoppedAt = lastAdvance;
     if (sampleProgress()) {
-      if (stallAnnounced) {
+      if (stallAnnounced || nudgedThisStall) {
         const held = Math.round(Date.now() / 1000 - stoppedAt);
-        stallAnnounced = false;
         console.info(`${TAG} picture moving again`);
-        toExtension("event", { event: { type: "pictureRecovered", seconds: Math.max(held, 0) } });
+        toExtension("event", {
+          event: { type: "pictureRecovered", seconds: Math.max(held, 0), by: lastRemedy },
+        });
       }
+      stallAnnounced = false;
+      nudgedThisStall = false;
+      lastRemedy = "";
       return;
     }
     if (pausedByChoice()) {
@@ -573,6 +670,23 @@
     }
 
     const stuck = Date.now() / 1000 - lastAdvance;
+    if (stuck < STALL_NUDGE_SECONDS) return;
+
+    // 1. Pause/play, once per stall. Allowed in a hidden tab and during a
+    //    break: it opens no session, so there is no preroll to buy.
+    if (!nudgedThisStall) {
+      nudgedThisStall = true;
+      const how = nudgePlayer();
+      lastRemedy = "pause/play";
+      const hidden = document.visibilityState === "hidden";
+      console.info(`${TAG} picture stopped ${Math.round(stuck)}s — pause/play -> ${how}`);
+      toExtension("event", {
+        event: { type: "playerNudged", seconds: Math.round(stuck), how, hidden },
+      });
+      return;
+    }
+
+    // 2. Still stuck well after that: report it, and reload if we may.
     if (stuck < STALL_SECONDS) return;
 
     if (!stallAnnounced) {
@@ -606,6 +720,7 @@
     if (t - lastStallReload < STALL_RELOAD_COOLDOWN) return;
     lastStallReload = t;
     const how = reloadPlayer();
+    lastRemedy = "reload";
     console.info(`${TAG} reloading the player to unstick it -> ${how}`);
     toExtension("event", { event: { type: "reloadPerformed", reason: "picture stuck", how } });
   }

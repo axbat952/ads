@@ -154,6 +154,22 @@ export function installHook(scope, options = {}) {
   // only when hidden is a different animal from one that happens anywhere.
   let hidden = false;
 
+  /**
+   * In a TRACE build, the first playlists served are sent to the page whole.
+   * A start that fails one time in three cannot be understood from what was
+   * decided — only from what the player was actually handed.
+   */
+  let traced = 0;
+  const TRACE_SERVES = 14;
+  const traceServe = (url, body, source) => {
+    if (!scope.__ADS_REMOVE_TRACE || traced >= TRACE_SERVES) return;
+    traced += 1;
+    send({
+      key: "ADS_Event",
+      event: { type: "traceServe", n: traced, source, url: url.slice(-40), body: String(body).slice(0, 2400) },
+    });
+  };
+
   /** When the player last asked for a playlist, and whether we said so. */
   let lastPoll = 0;
   let stallReported = false;
@@ -267,6 +283,7 @@ export function installHook(scope, options = {}) {
       }
       const out = await blocker.onMedia(url, text);
       held();
+      traceServe(url, out, out === text ? "origin" : "media");
       return playlistResponse(out, out === text ? "origin" : "media", response);
     } catch (error) {
       // An engine error must never break playback: hand back what Twitch sent,

@@ -235,7 +235,9 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
           `picture stuck ${event.seconds}s (${where(event.hidden)}, ${event.videos || 0} video element(s))`,
         );
       } else if (event.type === "pictureRecovered") {
-        note("info", `picture recovered after ${event.seconds}s`);
+        note("info", `picture recovered after ${event.seconds}s${event.by ? ` (${event.by})` : ""}`);
+      } else if (event.type === "playerNudged") {
+        note("warning", `picture stopped ${event.seconds}s — pause/play (${where(event.hidden)})`);
       } else if (event.type === "slowHold") {
         note("warning", `playlist held ${(event.ms / 1000).toFixed(1)}s (${where(event.hidden)})`);
       } else if (event.type === "playerStopped") {

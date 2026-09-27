@@ -8,9 +8,10 @@
     "test": "node --test tests/*.test.mjs",
     "smoke": "node tests/smoke.mjs",
     "probe": "node tests/probe-candidates.mjs",
-    "switch": "node tests/switch.mjs"
+    "switch": "node tests/switch.mjs",
+    "playback": "node tests/playback.mjs"
   },
-  "version": "1.2.3",
+  "version": "1.2.4",
   "engines": {
     "node": ">=22"
   }
