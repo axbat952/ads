@@ -218,7 +218,18 @@ export function installHook(scope, options = {}) {
       send({ key: "ADS_Reload", reason });
       return true;
     },
-    onEvent: (event) => send({ key: "ADS_Event", event }),
+    // Every engine line written while the tab is hidden says so. Whether a
+    // break happened in the background is the whole question behind the
+    // freeze, and a log of breaks that cannot answer it has to be followed by
+    // "was the tab hidden at that point?".
+    onEvent: (event) =>
+      send({
+        key: "ADS_Event",
+        event:
+          hidden && event.type === "log"
+            ? { ...event, message: `${event.message} [tab hidden]` }
+            : event,
+      }),
     options: options.options || {},
   });
 

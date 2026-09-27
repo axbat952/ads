@@ -652,7 +652,12 @@ ${event.body}`);
         const held = Math.round(Date.now() / 1000 - stoppedAt);
         console.info(`${TAG} picture moving again`);
         toExtension("event", {
-          event: { type: "pictureRecovered", seconds: Math.max(held, 0), by: lastRemedy },
+          event: {
+            type: "pictureRecovered",
+            seconds: Math.max(held, 0),
+            by: lastRemedy,
+            hidden: document.visibilityState === "hidden",
+          },
         });
       }
       stallAnnounced = false;
