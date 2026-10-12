@@ -10,8 +10,9 @@
  * tally is only useful once accumulated over days.
  */
 
-import { aggregate, badgeText, emptyTotals, foldSilent, statusColour } from "./lib/aggregate.js";
+import { aggregate, badgeText, emptyTotals, foldSilent } from "./lib/aggregate.js";
 import { emptyRanking, orderLabels, pruneRanking, recordOutcomes } from "./lib/ranking.js";
+import { status } from "./lib/view.js";
 
 const STORAGE_KEY = "twitch-ads-remove-state";
 /**
@@ -35,8 +36,17 @@ const state = {
   watched: 0,
   /** Last report received, used to measure `watched` without counting absences. */
   lastTick: 0,
-  reports: {}, // key -> {receivedAt, stats} — live workers only
+  reports: {}, // key -> {receivedAt, stats, baseline?} — live workers only
   totals: emptyTotals(), // running total of workers that went away
+  /**
+   * Workers folded into `totals`, with the counters they had then.
+   *
+   * A worker is folded after a minute of silence, but silence is not death: a
+   * sleeping laptop, a frozen tab, the switch turned off for a while. When one
+   * speaks again it is taken back with what was folded as its baseline, so
+   * only what it adds from then on counts — it was counted twice before.
+   */
+  folded: {}, // key -> {at, stats}
   log: [], // {at, level, message}
   /**
    * What each backup source is worth, per channel.
@@ -91,6 +101,8 @@ async function load() {
   state.watched = Math.max(state.watched, Number(saved.watched) || 0);
   state.totals = { ...emptyTotals(), ...saved.totals, tally: { ...(saved.totals || {}).tally } };
 
+  state.folded = { ...(saved.folded || {}), ...state.folded };
+
   for (const [key, report] of Object.entries(saved.reports || {})) {
     const current = state.reports[key];
     // Most recent wins: a report that arrived meanwhile is fresher than disk.
@@ -127,7 +139,10 @@ function currentStats() {
   // The switch is authoritative over anything the workers last said: when it is
   // off no worker reports at all, so their final snapshot would otherwise keep
   // the dot green for ever.
-  return { ...aggregate(reports, state.watched, state.totals), blocking: enabled };
+  return {
+    ...aggregate(reports, state.watched, state.totals, { at: Date.now() / 1000 }),
+    blocking: enabled,
+  };
 }
 
 /**
@@ -137,7 +152,10 @@ function currentStats() {
  * a tab spent asleep. Reports arrive every 2s while a player runs, so their
  * cadence *is* the measurement.
  */
-function countWatchTime() {
+function countWatchTime(stats) {
+  // Only a report from a player that is fetching a stream: every worker
+  // reports, playing or not, and an idle player page counted as watching.
+  if (!stats || !stats.channel || stats.polling === false) return;
   const t = Date.now() / 1000;
   if (state.lastTick && t - state.lastTick < TICK_MAX) state.watched += t - state.lastTick;
   state.lastTick = t;
@@ -151,10 +169,35 @@ function countWatchTime() {
  */
 function foldSilentWorkers() {
   const reports = Object.entries(state.reports).map(([wid, value]) => ({ wid, ...value }));
-  const { alive, totals } = foldSilent(reports, state.totals, Date.now() / 1000);
+  const t = Date.now() / 1000;
+  const { alive, totals, folded } = foldSilent(reports, state.totals, t);
   if (alive.length === reports.length) return;
   state.totals = totals;
-  state.reports = Object.fromEntries(alive.map((r) => [r.wid, { receivedAt: r.receivedAt, stats: r.stats }]));
+  state.reports = Object.fromEntries(
+    alive.map((r) => [r.wid, { receivedAt: r.receivedAt, stats: r.stats, baseline: r.baseline }]),
+  );
+  for (const { wid, stats } of folded) state.folded[wid] = { at: t, stats };
+  // Bounded: a day is ample for a worker to come back, and the player builds a
+  // new one on every reload.
+  const kept = Object.entries(state.folded)
+    .filter(([, entry]) => t - entry.at < FOLDED_KEEP)
+    .sort((a, b) => b[1].at - a[1].at)
+    .slice(0, FOLDED_MAX);
+  state.folded = Object.fromEntries(kept);
+}
+
+const FOLDED_KEEP = 86400;
+const FOLDED_MAX = 100;
+
+/** Record a worker's report, against what was already counted of it. */
+function recordReport(key, stats) {
+  const previous = state.reports[key];
+  let baseline = previous ? previous.baseline : undefined;
+  if (!previous && state.folded[key]) {
+    baseline = state.folded[key].stats;
+    delete state.folded[key];
+  }
+  state.reports[key] = { receivedAt: Date.now() / 1000, stats, baseline };
 }
 
 /**
@@ -167,7 +210,9 @@ let badgeTimer = null;
 function refreshBadge() {
   const stats = currentStats();
   chrome.action.setBadgeText({ text: badgeText(stats) }).catch(() => {});
-  chrome.action.setBadgeBackgroundColor({ color: statusColour(stats) }).catch(() => {});
+  // The popup's own colour, from the same function: the badge used to have a
+  // palette of its own, orange for a break the popup showed green.
+  chrome.action.setBadgeBackgroundColor({ color: status(stats).colour }).catch(() => {});
 
   if (stats.inBreak && stats.currentBreak && !badgeTimer) {
     badgeTimer = setInterval(refreshBadge, 1000);
@@ -199,15 +244,17 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       // Worker ids are per tab, so they are prefixed to keep two Twitch tabs
       // from colliding.
       const key = `${(sender && sender.tab && sender.tab.id) || 0}:${message.wid || "w"}`;
-      state.reports[key] = { receivedAt: Date.now() / 1000, stats: message.stats };
-      countWatchTime();
+      recordReport(key, message.stats);
+      countWatchTime(message.stats);
       foldSilentWorkers();
       refreshBadge();
       scheduleWrite();
       // The reply carries the learned order back to the page. Answering on the
       // report the page already sends avoids `chrome.tabs` and the host
-      // permission it would require.
-      respond({ order: orderFor(message.stats.channel) || [] });
+      // permission it would require. Nothing for a worker with no channel:
+      // its empty order reached every worker of the page and undid the
+      // ranking every two seconds.
+      respond(message.stats.channel ? { order: orderFor(message.stats.channel) || [] } : {});
       return true;
     } else if (message.type === "event" && message.event) {
       const event = message.event;
@@ -222,8 +269,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       }
       const where = (hidden) => (hidden ? "tab hidden" : "tab visible");
       if (event.type === "log") note(event.level || "info", event.message || "");
-      else if (event.type === "break") note("warning", `ad break ${event.roll || "?"} ${Math.round(event.duration || 0)}s`);
+      // No line for the `break` event: the engine's own ">> AD" line says the
+      // same, and every break was written twice.
       else if (event.type === "reloadPerformed") note("warning", `player reload: ${event.reason} (${event.how})`);
+      else if (event.type === "reloadSkipped") note("info", `player reload skipped: ${event.reason} (${event.why})`);
       else if (event.type === "error") note("error", `engine error: ${event.message}`);
       // The diagnostics below answer one question between them: when the
       // picture stops, is the extension holding the player, has the player
@@ -253,26 +302,40 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       scheduleWrite();
     } else if (message.type === "ready") {
       note("info", "engine installed in the player worker");
+      scheduleWrite();
     }
     return undefined;
   }
 
+  // The popup waits for the saved state. The service worker is asleep most of
+  // the time the popup opens, and answering from the empty memory it wakes up
+  // with showed a frame of zeros — and let a reset be merged back over by the
+  // read still in flight.
   if (message.source === "ads-remove-popup") {
     if (message.type === "stats") {
-      respond({ stats: currentStats(), log: state.log.slice(-120) });
+      loaded.then(() => respond({ stats: currentStats(), log: state.log.slice(-120) }));
       return true;
     }
     if (message.type === "reset") {
-      state.watched = 0;
-      state.lastTick = 0;
-      state.reports = {};
-      state.totals = emptyTotals();
-      state.log = [];
-      state.ranking = emptyRanking();
-      state.labels = [];
-      refreshBadge();
-      scheduleWrite();
-      respond({ ok: true });
+      loaded.then(() => {
+        const t = Date.now() / 1000;
+        state.watched = 0;
+        state.lastTick = 0;
+        // Live workers keep their counters, which only grow: what they hold
+        // now becomes their baseline. Emptying the list instead let the next
+        // report, two seconds later, bring every number back.
+        for (const report of Object.values(state.reports)) {
+          report.baseline = report.stats;
+          report.receivedAt = Math.min(report.receivedAt, t);
+        }
+        state.totals = emptyTotals();
+        state.log = [];
+        state.ranking = emptyRanking();
+        state.labels = [];
+        refreshBadge();
+        scheduleWrite();
+        respond({ ok: true });
+      });
       return true;
     }
   }
@@ -287,4 +350,4 @@ chrome.storage.onChanged.addListener((changes, area) => {
   scheduleWrite();
 });
 
-load().then(refreshBadge);
+const loaded = load().then(refreshBadge);

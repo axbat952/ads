@@ -39,6 +39,14 @@ const TRACKING_ATTRS = [
 ];
 
 /**
+ * `#EXT-X-DISCONTINUITY` itself — not `#EXT-X-DISCONTINUITY-SEQUENCE`, a header
+ * tag that shares its prefix and says nothing about any one segment.
+ */
+function isDiscontinuity(line) {
+  return line.trim() === "#EXT-X-DISCONTINUITY";
+}
+
+/**
  * Split an HLS attribute list into an object.
  * Handles commas inside quoted values, common in ad tracking URLs.
  */
@@ -162,7 +170,7 @@ export function parseMedia(text) {
 
     if (line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
       playlist.mediaSequence = toInt(line.split(":").slice(1).join(":").trim());
-    } else if (line.startsWith("#EXT-X-DISCONTINUITY")) {
+    } else if (isDiscontinuity(line)) {
       pendingDiscontinuity = true;
     } else if (line.startsWith("#EXT-X-DATERANGE:")) {
       const attrs = parseAttributes(line.split(":").slice(1).join(":"));
@@ -240,41 +248,79 @@ function neutraliseTracking(line) {
  * Fallback used when no clean stream could be obtained. It does **not** restore
  * the live content: under SSAI the content is not broadcast during the break.
  *
- * Returns `{ text, removed }`.
+ * Returns `{ text, removed, removedBefore }`: ads removed, and segments of any
+ * kind removed ahead of the first one kept.
  */
 export function stripAds(text) {
   const all = lines(text);
+  const duringBreak = hasAdMarkers(text);
+
+  const isAd = [];
+  for (const line of all) {
+    if (!line.startsWith("#EXTINF:")) continue;
+    const match = EXTINF_RE.exec(line);
+    isAd.push(Boolean(match) && match[2].trim().toLowerCase() !== LIVE_TITLE);
+  }
+
+  /**
+   * Live segments that come BEFORE an ad still followed by live go too.
+   *
+   * `#EXT-X-MEDIA-SEQUENCE` numbers the first segment, and the rest follow by
+   * position — so a segment keeps its number only if nothing is removed in
+   * front of it, or the sequence is raised by exactly what was. Ads at the
+   * head were handled that way; ads in the middle were not, and every live
+   * segment behind them moved down by the length of the pod: served as 203 on
+   * one poll and 206 on the next, while 206 had already gone to another. Those
+   * earlier live segments were served on earlier polls, so dropping them with
+   * the ads costs the player nothing and leaves one clean run to number.
+   */
+  let lastInnerAd = -1;
+  let liveAfter = false;
+  for (let i = isAd.length - 1; i >= 0; i -= 1) {
+    if (!isAd[i]) liveAfter = true;
+    else if (liveAfter) {
+      lastInnerAd = i;
+      break;
+    }
+  }
+  const dropped = (i) => isAd[i] || i <= lastInnerAd;
+
   const out = [];
   let removed = 0;
-  /**
-   * Ad segments dropped *before* the first one kept.
-   *
-   * `#EXT-X-MEDIA-SEQUENCE` numbers the first segment of the playlist, and the
-   * rest follow by position. Dropping segments from the head therefore renames
-   * every segment after them unless the sequence is raised to match — the
-   * player would receive the same segment under a new number on each poll,
-   * re-download it, and never see the timeline advance.
-   */
   let removedBefore = 0;
   let kept = 0;
+  let index = 0;
   let skipNextUrl = false;
-  const duringBreak = hasAdMarkers(text);
+  // Tags that describe the segment about to come. They go with it: kept, they
+  // piled up in front of the next segment — two discontinuities, two dates.
+  let attached = [];
+  // A removed segment that opened a discontinuity hands it to the next one
+  // kept: the timeline still jumps there.
+  let carry = false;
 
   for (let line of all) {
     if (skipNextUrl && line.trim() && !line.startsWith("#")) {
       skipNextUrl = false;
       continue;
     }
-    skipNextUrl = false;
+    if (line.startsWith("#EXT-X-PROGRAM-DATE-TIME:") || isDiscontinuity(line)) {
+      attached.push(line);
+      continue;
+    }
 
     if (line.startsWith("#EXTINF:")) {
-      const match = EXTINF_RE.exec(line);
-      if (match && match[2].trim().toLowerCase() !== LIVE_TITLE) {
-        removed += 1;
+      const i = index;
+      index += 1;
+      if (dropped(i)) {
+        if (isAd[i]) removed += 1;
         if (kept === 0) removedBefore += 1;
+        if (attached.some(isDiscontinuity)) carry = true;
+        attached = [];
         skipNextUrl = true;
         continue;
       }
+      if (carry && !attached.some(isDiscontinuity)) attached.unshift("#EXT-X-DISCONTINUITY");
+      carry = false;
       kept += 1;
     }
 
@@ -285,8 +331,10 @@ export function stripAds(text) {
 
     if (line.startsWith("#EXT-X-DATERANGE:")) line = neutraliseTracking(line);
 
-    out.push(line);
+    out.push(...attached, line);
+    attached = [];
   }
+  out.push(...attached);
 
   let cleaned = out.join("\n");
   if (removedBefore > 0 && kept > 0) {
@@ -399,7 +447,7 @@ export function dropLeadingSegments(text, count) {
       skipNextUrl = false;
       continue;
     }
-    if (line.startsWith("#EXT-X-PROGRAM-DATE-TIME:") || line.startsWith("#EXT-X-DISCONTINUITY")) {
+    if (line.startsWith("#EXT-X-PROGRAM-DATE-TIME:") || isDiscontinuity(line)) {
       attached.push(line);
       continue;
     }
@@ -436,7 +484,12 @@ export function markDiscontinuity(text, before = 0) {
       seen += 1;
       continue;
     }
-    if (i > 0 && all[i - 1].startsWith("#EXT-X-DISCONTINUITY")) return text;
+    // Already there? Twitch writes it ahead of the segment's other tags —
+    // DISCONTINUITY, then PROGRAM-DATE-TIME, then EXTINF — so the line just
+    // above is not enough: every tag back to the previous segment is looked at.
+    for (let j = i - 1; j >= 0 && all[j].startsWith("#"); j -= 1) {
+      if (isDiscontinuity(all[j])) return text;
+    }
     return [...all.slice(0, i), "#EXT-X-DISCONTINUITY", ...all.slice(i)].join("\n");
   }
   return text; // the window does not reach that segment

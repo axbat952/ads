@@ -7,24 +7,24 @@
   </head>
   <body>
     <header>
-      <div class="logo">▶</div>
+      <div class="logo" aria-hidden="true">▶</div>
       <div>
         <h1>Twitch Ads Remove</h1>
         <div class="channel">Channel: <b id="channel">—</b></div>
       </div>
       <label class="switch" for="enabled">
-        <input type="checkbox" id="enabled" checked />
+        <input type="checkbox" id="enabled" role="switch" aria-label="Ad blocking" checked />
         <span class="track"><span class="knob"></span></span>
         <span class="switch-label" id="enabled-label">On</span>
       </label>
     </header>
 
-    <section class="status">
+    <section class="status" aria-live="polite">
       <span class="dot" id="dot"></span>
       <div>
-        <div class="status-title" id="status-title">Waiting for a stream…</div>
+        <div class="status-title" id="status-title">Waiting for a stream</div>
         <div class="status-detail" id="status-detail">
-          Open a Twitch channel — the engine hooks into the player when playback starts.
+          Open a live channel on Twitch; its status shows here.
         </div>
       </div>
     </section>
@@ -34,7 +34,7 @@
         <span id="countdown-text"></span>
         <span id="countdown-detail" class="countdown-detail"></span>
       </div>
-      <div class="bar"><div class="bar-fill" id="countdown-bar"></div></div>
+      <div class="bar" aria-hidden="true"><div class="bar-fill" id="countdown-bar"></div></div>
     </div>
 
     <div class="hint" id="hint" hidden></div>
@@ -46,7 +46,7 @@
     <footer>
       <span id="last-break">No ad break yet.</span>
       <span class="actions">
-        <button id="log-toggle" type="button">Log</button>
+        <button id="log-toggle" type="button" aria-expanded="false" aria-controls="log">Log</button>
         <button id="reset" type="button">Reset</button>
       </span>
     </footer>

@@ -10,7 +10,6 @@ import { describe, it } from "node:test";
 
 import {
   aggregate,
-  statusColour,
   breakElapsed,
   foldSilent,
   breakRemaining,
@@ -18,7 +17,15 @@ import {
   badgeText,
   emptyTotals,
 } from "../src/lib/aggregate.js";
-import { channelTally, breakCountdown, lastBreakLine, status, formatDuration, tiles } from "../src/lib/view.js";
+import {
+  COLOURS,
+  channelTally,
+  breakCountdown,
+  lastBreakLine,
+  status,
+  formatDuration,
+  tiles,
+} from "../src/lib/view.js";
 
 const report = (wid, receivedAt, stats) => ({ wid, receivedAt, stats });
 
@@ -199,11 +206,18 @@ describe("folding of vanished workers", () => {
 
 describe("status dot and badge", () => {
   it("follows the state: grey, green, orange, red", () => {
-    assert.equal(statusColour({ blocking: false }), "#808080");
-    assert.equal(statusColour({ blocking: true, inBreak: false }), "#3cc86e");
-    assert.equal(statusColour({ blocking: true, inBreak: true }), "#ffa500");
-    assert.equal(statusColour({ blocking: true, inBreak: true, adNotBlocked: true }), "#e63c3c");
-    assert.equal(statusColour({ blocking: true, frozenFor: 20 }), "#e63c3c");
+    const on = { blocking: true, channel: "c" };
+    assert.equal(status({ blocking: false }).colour, COLOURS.muted);
+    assert.equal(status({ blocking: true }).colour, COLOURS.muted, "no stream: nothing to report");
+    assert.equal(status({ ...on, inBreak: false }).colour, COLOURS.green);
+    assert.equal(status({ ...on, inBreak: true }).colour, COLOURS.green, "replaced: nothing seen");
+    assert.equal(status({ ...on, inBreak: true, adNotBlocked: true }).colour, COLOURS.orange);
+    assert.equal(status({ ...on, frozenFor: 20 }).colour, COLOURS.red);
+  });
+
+  it("says AD once the announced length is exceeded, never 0s", () => {
+    const stats = { blocking: true, inBreak: true, currentBreak: { startedAt: 1000, duration: 30 } };
+    assert.equal(badgeText(stats, 1045), "AD");
   });
 
   it("carries the countdown during a break", () => {
@@ -232,17 +246,18 @@ describe("formatting", () => {
   });
 
   it("explains the state in plain words, not jargon", () => {
-    const replaced = status({ blocking: true, inBreak: true, backupFeeds: ["embed/web"] });
+    const replaced = status({ blocking: true, channel: "c", inBreak: true, backupFeeds: ["embed/web"] });
     assert.equal(replaced.title, "Ad running — replaced");
     assert.ok(replaced.detail.includes("embed/web"));
 
-    const hidden = status({ blocking: true, inBreak: true, adNotBlocked: true });
+    const hidden = status({ blocking: true, channel: "c", inBreak: true, adNotBlocked: true });
     assert.equal(hidden.title, "Ad running — hidden");
     assert.ok(hidden.detail.includes("muted"), "it states what the user sees");
     assert.ok(hidden.detail.includes("reload"), "and what is attempted in parallel");
 
     assert.equal(status({ blocking: false }).title, "Switched off");
-    assert.equal(status({ blocking: true }).title, "No ad");
+    assert.equal(status({ blocking: true, channel: "c" }).title, "No ad");
+    assert.equal(status({ blocking: true }).title, "Waiting for a stream", "no stream, no promise");
   });
 
   it("shows the measurement that justifies the reload", () => {
@@ -290,5 +305,49 @@ describe("formatting", () => {
       lastBreakLine({ lastBreak: { roll: "PREROLL", duration: 30.2, spots: 2 } }),
       "Last break: PREROLL, 30s, 2 spots",
     );
+  });
+});
+
+describe("reports over time", () => {
+  const counters = (breaks, at) => ({ channel: "c", breaks, adTimeAvoided: breaks * 30, tally: { c: [breaks, 0] }, at });
+
+  it("does not count twice a worker folded and then heard from again", () => {
+    // Silent for a minute (laptop asleep, switch off), folded into the total,
+    // then speaking again with the same cumulative counters.
+    const first = foldSilent([report("A", 0, counters(3))], emptyTotals(), 100);
+    assert.equal(first.totals.breaks, 3);
+    const back = { wid: "A", receivedAt: 102, stats: counters(3), baseline: first.folded[0].stats };
+    const total = aggregate([back], 0, first.totals);
+    assert.equal(total.breaks, 3, "not 6");
+    assert.deepEqual(total.tally, { c: [3, 0] });
+
+    const later = aggregate([{ ...back, stats: counters(4) }], 0, first.totals);
+    assert.equal(later.breaks, 4, "what it adds afterwards still counts");
+  });
+
+  it("keeps a reset: a live worker's counters become its baseline", () => {
+    const stats = counters(3);
+    const afterReset = aggregate([{ wid: "A", receivedAt: 10, stats, baseline: stats }], 0, emptyTotals());
+    assert.equal(afterReset.breaks, 0);
+    assert.equal(afterReset.adTimeAvoided, 0);
+    assert.deepEqual(afterReset.tally, { c: [0, 0] });
+  });
+
+  it("forgets the state of a tab that stopped reporting", () => {
+    const stale = report("A", 1000, { channel: "c", inBreak: true, currentBreak: { startedAt: 990, duration: 30 } });
+    const now = aggregate([stale], 0, null, { at: 1003 });
+    assert.equal(now.inBreak, true, "fresh: still in the break");
+    const later = aggregate([stale], 0, null, { at: 4600 });
+    assert.equal(later.inBreak, false);
+    assert.equal(later.channel, "");
+    assert.equal(later.currentBreak, null);
+  });
+
+  it("shows the tab in a break, then the one in view, not whichever spoke last", () => {
+    const inView = report("A", 100, { channel: "one", hidden: false });
+    const behind = report("B", 101, { channel: "two", hidden: true });
+    assert.equal(aggregate([inView, behind], 0, null, { at: 102 }).channel, "one");
+    const breakBehind = report("B", 101, { channel: "two", hidden: true, inBreak: true });
+    assert.equal(aggregate([inView, breakBehind], 0, null, { at: 102 }).channel, "two");
   });
 });

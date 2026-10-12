@@ -166,13 +166,10 @@ export function createBlocker({
         variant: null, // {channel, variant}
         backup: null, // {url, label, obtainedAt, quality}
         serving: "origin",
-        failedTypes: null, // Map(label -> timestamp)
-        blockedUntil: 0,
-        failures: 0,
+        failedTypes: null, // Set(label) — caught by ads during this break
         strippingSince: 0,
         stripWarned: false,
         letThroughWarned: false,
-        counted: null, // {channel, letThrough}
         sequenceOffset: 0,
         lastSequence: -1,
         // Served sequence number of the segment the last source switch landed
@@ -195,16 +192,24 @@ export function createBlocker({
     state.strippingSince = 0;
     state.stripWarned = false;
     state.letThroughWarned = false;
-    state.counted = null;
-    state.blockedUntil = 0;
-    // New break, new chance: start again from a short back-off.
-    state.failures = 0;
   }
 
   // -- session-wide state -------------------------------------------------
   let currentChannel = "";
   let cleanMaster = null; // {channel, label, master, obtainedAt}
   const tally = new Map(); // channel -> [blocked, letThrough]
+  /** Verdict already entered in the tally for the current break. */
+  let counted = null; // {at, channel, letThrough}
+  /** Break for which an ad let through was already counted. */
+  let letThroughCountedAt = null;
+  /**
+   * Back-off after failed searches, per channel.
+   *
+   * Per URL, each rendition the player polls ran its own searches on its own
+   * schedule: two renditions through one unblockable minute made eight failed
+   * searches and close to ninety token requests, twice what one would.
+   */
+  const backoffs = new Map(); // channel -> {failures, until}
 
   const counters = {
     breaks: 0,
@@ -217,14 +222,27 @@ export function createBlocker({
     lastSearchMs: 0,
   };
   let lastBreak = null;
+  /**
+   * Last time any playlist was seen in a break.
+   *
+   * A break is new when nothing was in one for a while — not when the last
+   * one *started* a while ago. Measured from the start, a rendition joining a
+   * break ten seconds in (a quality change, the new playlist of a reload)
+   * counted the same break a second time.
+   */
+  let lastInBreakAt = -Infinity;
   let adTimeTotal = 0;
   let lastTick = null;
   const sessionStart = now();
 
   let lastReload = -Infinity;
   let reloadsThisBreak = 0;
-  /** True while waiting to see whether a reload achieved anything. */
-  let watchingReload = false;
+  /**
+   * When the reload being watched was asked for, or 0. A swap within
+   * `RELOAD_WATCH` of it is credited to it; one ten minutes later is not.
+   */
+  let watchingReload = 0;
+  const RELOAD_WATCH = 30;
 
   function log(level, message) {
     onEvent({ type: "log", level, message });
@@ -246,11 +264,14 @@ export function createBlocker({
     return true;
   }
 
+  /**
+   * Each tier is ordered on its own. Ordered together, a degraded source that
+   * happened to score well went ahead of the source-quality ones, and a clean
+   * 1080p feed was passed over for 480p.
+   */
   function candidates() {
-    const list = opt.lowQuality
-      ? [...BACKUP_CANDIDATES, ...LOW_QUALITY_CANDIDATES]
-      : BACKUP_CANDIDATES;
-    return orderCandidates(list, order);
+    const best = orderCandidates(BACKUP_CANDIDATES, order);
+    return opt.lowQuality ? [...best, ...orderCandidates(LOW_QUALITY_CANDIDATES, order)] : best;
   }
 
   /** Candidates still worth trying for this URL during the current break. */
@@ -285,19 +306,34 @@ export function createBlocker({
     return [...states.entries()].filter(([, s]) => t - s.seenAt < URL_STALE).map(([url]) => url);
   }
 
+  function channelOf(url) {
+    const state = stateOf(url);
+    return (state.variant && state.variant.channel) || currentChannel;
+  }
+
+  function backoffFor(channel) {
+    let entry = backoffs.get(channel);
+    if (!entry) {
+      entry = { failures: 0, until: 0 };
+      backoffs.set(channel, entry);
+    }
+    return entry;
+  }
+
   /**
-   * Keep the per-channel tally: one entry per break and per URL.
+   * Keep the per-channel tally: one entry per break.
    *
-   * A break can change verdict along the way — let through at first, then
-   * replaced once a clean feed is found. Counting both would make the table show
-   * more events than there were breaks, so the previous verdict is corrected.
+   * Per break, not per URL: the player polls two or three renditions, and
+   * each one entered the table — one break, three lines. A break can also
+   * change verdict along the way — let through at first, then replaced once a
+   * clean feed is found — so the previous verdict is corrected rather than
+   * added to.
    */
   function count(url, letThrough) {
-    const state = stateOf(url);
-    const channel = (state.variant && state.variant.channel) || currentChannel;
-    if (!channel) return;
+    const channel = channelOf(url);
+    if (!channel || !lastBreak) return;
 
-    const before = state.counted;
+    const before = counted && counted.at === lastBreak.at ? counted : null;
     if (before && before.channel === channel && before.letThrough === letThrough) return;
 
     if (before) {
@@ -311,7 +347,7 @@ export function createBlocker({
     const entry = tally.get(channel) || [0, 0];
     entry[letThrough ? 1 : 0] += 1;
     tally.set(channel, entry);
-    state.counted = { channel, letThrough };
+    counted = { at: lastBreak.at, channel, letThrough };
   }
 
   /**
@@ -425,8 +461,9 @@ export function createBlocker({
     lastReload = t;
     reloadsThisBreak += 1;
     counters.reloads += 1;
-    watchingReload = true;
-    log("warning", `player reload requested (${reason})`);
+    watchingReload = t;
+    // No log line here: the page writes one when it actually reloads, with
+    // how — two lines for one reload said nothing more than one.
     return true;
   }
 
@@ -490,9 +527,10 @@ export function createBlocker({
 
     if (!result.stream) {
       counters.failedSearches += 1;
-      state.failures += 1;
-      const wait = backoffAfter(state.failures);
-      state.blockedUntil = now() + wait;
+      const backoff = backoffFor(channel);
+      backoff.failures += 1;
+      const wait = backoffAfter(backoff.failures);
+      backoff.until = now() + wait;
       log("warning", `no clean feed for ${channel} (retry in ${wait}s): ${result.attempts.map(([l, r]) => `${l} (${r})`).join(", ")}`);
       onEvent({
         type: "search",
@@ -505,7 +543,7 @@ export function createBlocker({
     }
 
     const feed = result.stream;
-    state.failures = 0;
+    backoffFor(channel).failures = 0;
     cleanMaster = { channel, label: feed.playerType, master: feed.master, obtainedAt: now() };
     state.backup = {
       url: feed.mediaUrl,
@@ -515,21 +553,30 @@ export function createBlocker({
       resolution: feed.variant ? feed.variant.resolution : "",
     };
     log("info", `clean feed found via ${feed.playerType} in ${counters.lastSearchMs}ms (${feed.quality})`);
-    onEvent({
-      type: "search",
-      channel,
-      found: true,
-      label: feed.playerType,
-      quality: feed.quality,
-      outcomes: result.outcomes,
-    });
+    // The search returned at the winner; the ranking wants every verdict, so
+    // the event waits for the slowest candidate without holding anything up.
+    result.allOutcomes.then((outcomes) =>
+      onEvent({
+        type: "search",
+        channel,
+        found: true,
+        label: feed.playerType,
+        quality: feed.quality,
+        outcomes,
+      }),
+    );
     return feed;
   }
 
-  /** Deduplicate searches: the player polls several renditions at once. */
+  /**
+   * One search at a time per URL, and none while the channel is backing off.
+   *
+   * The in-flight search stays per URL: each rendition needs a feed of its own
+   * quality, and the second one derives it from the master the first obtained.
+   */
   function startSearch(url) {
     if (searches.has(url)) return searches.get(url);
-    if (now() < stateOf(url).blockedUntil) return null;
+    if (now() < backoffFor(channelOf(url)).until) return null;
     const promise = search(url)
       .catch(() => null)
       .finally(() => searches.delete(url));
@@ -572,8 +619,8 @@ export function createBlocker({
       // playerType so it is not offered again during this break.
       state.backup = null;
       backupBodies.delete(entry.url);
-      if (!state.failedTypes) state.failedTypes = new Map();
-      state.failedTypes.set(entry.label, now());
+      if (!state.failedTypes) state.failedTypes = new Set();
+      state.failedTypes.add(entry.label);
       log("info", `replacement feed caught by ads (playerType=${entry.label})`);
       return null;
     }
@@ -581,16 +628,22 @@ export function createBlocker({
     state.strippingSince = 0;
     state.stripWarned = false;
     count(url, false);
-    counters.swaps += 1;
-    if (watchingReload) {
-      counters.usefulReloads += 1;
-      watchingReload = false;
+    if (watchingReload && now() - watchingReload <= RELOAD_WATCH) counters.usefulReloads += 1;
+    watchingReload = 0;
+    // The ad was let through and is hidden; a clean feed has turned up since.
+    // Without saying so, the page kept the live picture covered and muted for
+    // the rest of the announced break.
+    if (state.letThroughWarned) {
+      state.letThroughWarned = false;
+      log("info", "clean feed found after all — the ad is replaced");
+      onEvent({ type: "adReplaced" });
     }
     // One line per swap, not one per poll. The engine re-serves the backup
     // every two seconds for the length of the break, and reporting each of
-    // those buried everything else in the log.
+    // those buried everything else in the log. Counted the same way.
     const source = `backup:${entry.url}`;
     if (state.serving !== source) {
+      counters.swaps += 1;
       const asked = state.variant ? state.variant.variant : null;
       onEvent({
         type: "swap",
@@ -617,7 +670,13 @@ export function createBlocker({
     // not exist and switches to the streamer's offline screen, which needs a
     // manual reload. Serving the ad is the lesser evil; the page hides it.
     if (removed && parseMedia(cleaned).segments.length === 0) {
-      counters.adsLetThrough += 1;
+      // Once per break: this runs on every poll, and one preroll counted as
+      // forty-five ads let through.
+      const breakAt = lastBreak ? lastBreak.at : null;
+      if (letThroughCountedAt !== breakAt) {
+        letThroughCountedAt = breakAt;
+        counters.adsLetThrough += 1;
+      }
       count(url, true);
       if (!state.letThroughWarned) {
         state.letThroughWarned = true;
@@ -677,16 +736,23 @@ export function createBlocker({
     const wasInBreak = state.inBreak;
     const isInBreak = isAdBreak(playlist);
 
+    const previousInBreak = lastInBreakAt;
+    if (isInBreak) lastInBreakAt = now();
+
     if (isInBreak && !wasInBreak) {
-      reloadsThisBreak = 0;
       // A break belongs to the channel, not to one playlist URL. The player
       // polls two or three renditions and each one crosses into the break a
       // second or so apart, so counting per URL turned every break into two or
       // three: the log said AD #1, #2, #3 for a single pod, and the tally, the
       // ad time and the per-channel figures were inflated by however many
       // renditions happened to be in play.
-      if (!lastBreak || now() - lastBreak.at > BREAK_GRACE) {
+      if (!lastBreak || now() - previousInBreak > BREAK_GRACE) {
         counters.breaks += 1;
+        // The per-break limits start again here, and only here. Reset on every
+        // URL entering a break, they started again on every reload — each one
+        // brings new playlist URLs — and the cap of two never held.
+        reloadsThisBreak = 0;
+        backoffs.clear();
         const first = playlist.adBreaks[0];
         lastBreak = {
           at: now(),
@@ -696,14 +762,17 @@ export function createBlocker({
           duration: first ? first.duration : 0,
           spots: first ? first.podLength : 0,
         };
-        log("warning", `>> AD #${counters.breaks} (${lastBreak.roll}, ${Math.round(lastBreak.duration)}s, pod=${lastBreak.spots})`);
+        // Not numbered: the count belongs to this worker, which the player
+        // replaces on every reload, so the log said #1 again and again while
+        // the badge showed the running total.
+        log("warning", `>> AD (${lastBreak.roll}, ${Math.round(lastBreak.duration)}s, pod=${lastBreak.spots})`);
         onEvent({ type: "break", roll: lastBreak.roll, duration: lastBreak.duration, spots: lastBreak.spots });
       }
     } else if (wasInBreak && !isInBreak) {
       endOfBreak(state);
       // Live came back on its own; the reload, if any, may have nothing to do
       // with it, so stop watching.
-      watchingReload = false;
+      watchingReload = 0;
       // Announced once too: the renditions leave the break a few seconds apart,
       // and one of the logs had the same break ending twice, 55s apart.
       // This URL's flag is only cleared further down, so it is excluded here
@@ -712,15 +781,19 @@ export function createBlocker({
       if (live().every((u) => u === url || !stateOf(u).inBreak)) {
         log("info", "<< ad break over — back to live");
         onEvent({ type: "breakOver" });
+        // New break, new chance: the next one starts from a short back-off.
+        backoffs.clear();
       }
     }
 
     // Cumulated ad time. Only URLs the player still polls are considered:
     // otherwise one abandoned mid-break would stay flagged forever and keep the
     // counter running.
+    // Capped: a tab asleep for five minutes in the middle of a break is not
+    // five minutes of ad avoided.
     const t = now();
     if (lastTick !== null && live().some((u) => stateOf(u).inBreak)) {
-      adTimeTotal += t - lastTick;
+      adTimeTotal += Math.min(t - lastTick, URL_STALE);
     }
     lastTick = t;
 
@@ -742,7 +815,21 @@ export function createBlocker({
    * be cleared of suspicion in one click, rather than by uninstalling.
    */
   function setEnabled(on) {
+    const was = opt.block;
     opt.block = on !== false;
+    // While off, the player was handed Twitch's own numbers. Putting the offset
+    // of an earlier break back on top of them sent the sequence backwards —
+    // which a player takes for a stale playlist and waits on. Back on, the
+    // numbering starts again from what the player has been seeing.
+    if (opt.block && !was) {
+      for (const state of states.values()) {
+        state.serving = "origin";
+        state.sequenceOffset = 0;
+        state.lastSequence = -1;
+        state.discontinuityAt = -1;
+        state.heldUntil = NaN;
+      }
+    }
   }
 
   /**
@@ -756,8 +843,11 @@ export function createBlocker({
     const clean = String(channel || "").trim().toLowerCase();
     if (!clean || clean === currentChannel) return;
     currentChannel = clean;
-    // Channel change: what we knew about the previous one no longer applies.
+    // Channel change: what we knew about the previous one no longer applies —
+    // its break included, or a preroll on the new channel within seconds of
+    // the old one's break went uncounted.
     cleanMaster = null;
+    lastInBreakAt = -Infinity;
   }
 
   // -- telemetry ----------------------------------------------------------
@@ -804,6 +894,10 @@ export function createBlocker({
       qualityRequested: requested,
       failedSearches: counters.failedSearches,
       channel: currentChannel,
+      // Whether the player is asking for playlists at all. A worker reports
+      // every two seconds whether or not anything plays, and watch time was
+      // counted from those reports: an open, idle player page added up hours.
+      polling: active.length > 0,
       lastBreak,
       blocking: opt.block,
       adsLetThrough: counters.adsLetThrough,

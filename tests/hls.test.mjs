@@ -309,3 +309,50 @@ describe("segment times", () => {
     assert.ok(out.includes('CLASS="twitch-stitched-ad"'), "the header is kept");
   });
 });
+
+describe("review fixes — stripping and discontinuities", () => {
+  /** Window of `n` segments from `first`, ads on the numbers in `ads`. */
+  function window(first, n, ads) {
+    const out = ["#EXTM3U", "#EXT-X-VERSION:3", `#EXT-X-MEDIA-SEQUENCE:${first}`];
+    for (let s = first; s < first + n; s += 1) {
+      const ad = ads.includes(s);
+      if (ad !== ads.includes(s - 1)) out.push("#EXT-X-DISCONTINUITY");
+      out.push(`#EXTINF:2.000,${ad ? "Amazon|1" : "live"}`, `https://cdn.example/seg-${s}.ts`);
+    }
+    return `${out.join("\n")}\n`;
+  }
+
+  /** Map URI -> number the player would give it. */
+  function numbering(text) {
+    const first = readMediaSequence(text);
+    const uris = text.split("\n").filter((l) => l.startsWith("https://"));
+    return new Map(uris.map((u, i) => [u, first + i]));
+  }
+
+  it("keeps every live segment on its own number when the ads sit mid-window", () => {
+    const ads = [203, 204, 205];
+    for (let first = 198; first <= 203; first += 1) {
+      const { text } = stripAds(window(first, 8, ads));
+      for (const [uri, n] of numbering(text)) {
+        assert.equal(uri, `https://cdn.example/seg-${n}.ts`, `window from ${first}`);
+      }
+    }
+  });
+
+  it("leaves one discontinuity, not one per removed ad boundary", () => {
+    const { text } = stripAds(window(200, 8, [203, 204, 205]));
+    assert.equal((text.match(/^#EXT-X-DISCONTINUITY$/gm) || []).length, 1);
+  });
+
+  it("sees a discontinuity already written ahead of the segment's date", () => {
+    const body = [
+      "#EXTM3U",
+      "#EXT-X-MEDIA-SEQUENCE:10",
+      "#EXT-X-DISCONTINUITY",
+      "#EXT-X-PROGRAM-DATE-TIME:2026-10-12T20:00:00.000Z",
+      "#EXTINF:2.000,live",
+      "https://cdn.example/a.ts",
+    ].join("\n");
+    assert.equal(markDiscontinuity(body, 0), body);
+  });
+});

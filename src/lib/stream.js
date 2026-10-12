@@ -247,10 +247,18 @@ async function tryCandidate(candidate, channel, hdrs, fetcher, wanted) {
  * stripped playlist. The result is still the *first clean candidate in list
  * order*, so parallelism does not degrade the choice.
  *
- * Never rejects: every failure is recorded in `attempts`, and the verdict of
- * every candidate — winner included, and those that would also have worked — in
- * `outcomes`, which is what the ranking learns from. `attempts` stops at the
- * winner on purpose: it exists to explain a failure, not to score.
+ * It returns as soon as that candidate is known: clean, with every one before
+ * it settled. Waiting for the whole list let one slow source at the bottom
+ * hold a clean feed already in hand past the player's patience — the ad went
+ * through, and the reload that followed threw away the feed that had been
+ * found.
+ *
+ * Never rejects: every failure is recorded in `attempts`, which stops at the
+ * winner on purpose — it exists to explain a failure, not to score. The verdict
+ * of every candidate, winner included and those that would also have worked,
+ * arrives in `allOutcomes`, a promise settled once the slowest has answered:
+ * that is what the ranking learns from. `outcomes` holds the verdicts known on
+ * return — all of them when nothing was found.
  */
 export async function findCleanStream(
   channel,
@@ -258,19 +266,19 @@ export async function findCleanStream(
   wanted = null,
   candidates = BACKUP_CANDIDATES,
 ) {
-  const result = { stream: null, attempts: [], outcomes: [] };
+  const result = { stream: null, attempts: [], outcomes: [], allOutcomes: Promise.resolve([]) };
   if (!candidates.length) return result;
   const hdrs = headers();
 
-  const verdicts = await Promise.all(
-    candidates.map((c) => tryCandidate(c, channel, hdrs, fetcher, wanted)),
-  );
+  const pending = candidates.map((c) => tryCandidate(c, channel, hdrs, fetcher, wanted));
+  const verdictOf = (verdict) => [candidateLabel(verdict.candidate), Boolean(verdict.stream)];
+  result.allOutcomes = Promise.all(pending).then((verdicts) => verdicts.map(verdictOf));
 
-  for (const verdict of verdicts) {
-    result.outcomes.push([candidateLabel(verdict.candidate), Boolean(verdict.stream)]);
-  }
-
-  for (const verdict of verdicts) {
+  // In list order: a candidate is only taken once every one before it has
+  // answered, so the choice is the same as if all had been awaited.
+  for (const running of pending) {
+    const verdict = await running;
+    result.outcomes.push(verdictOf(verdict));
     if (verdict.stream) {
       result.stream = verdict.stream;
       return result;

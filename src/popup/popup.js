@@ -46,7 +46,7 @@ function renderTally(stats) {
 
   const table = document.createElement("table");
   const head = document.createElement("tr");
-  for (const name of ["channel", "blocked", "let through"]) {
+  for (const name of ["Channel", "Blocked", "Let through"]) {
     const th = document.createElement("th");
     th.textContent = name;
     head.append(th);
@@ -73,9 +73,29 @@ function renderTally(stats) {
   host.append(box);
 }
 
+/**
+ * Rewritten only when it changed, and only while shown. Rewriting it every
+ * second cleared any selection — the log could not be copied — and moved the
+ * scroll position under the reader.
+ */
+let shownLog = null;
 function renderLog(log) {
-  const time = (at) => new Date(at * 1000).toLocaleTimeString("en-GB");
-  $("log").textContent = log.length
+  const box = $("log");
+  if (box.hidden) return;
+  const last = log[log.length - 1];
+  const signature = `${log.length}:${last ? `${last.at}:${last.message}` : ""}`;
+  if (signature === shownLog) return;
+  shownLog = signature;
+  // The date as well as the time: the log is kept across days.
+  const time = (at) =>
+    new Date(at * 1000).toLocaleString("en-GB", {
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  box.textContent = log.length
     ? log.map((l) => `${time(l.at)}  ${l.level.padEnd(7)} ${l.message}`).join("\n")
     : "Nothing to report yet.";
 }
@@ -108,7 +128,7 @@ function renderSwitch(enabled, changedTo) {
   const hint = $("hint");
   if (changedTo === true) {
     hint.hidden = false;
-    hint.textContent = "Switched on. Reload the Twitch tab to hook the player.";
+    hint.textContent = "Switched on. A Twitch tab opened while it was off needs a reload.";
   } else if (changedTo === false) {
     hint.hidden = false;
     hint.textContent = "Switched off. The player is untouched from now on.";
@@ -117,7 +137,9 @@ function renderSwitch(enabled, changedTo) {
   }
 }
 
+let lastLog = [];
 function render({ stats, log }) {
+  lastLog = log || [];
   const { title, detail, colour } = status(stats);
   $("channel").textContent = stats.channel || "—";
   $("status-title").textContent = title;
@@ -155,13 +177,22 @@ $("enabled").addEventListener("change", async (event) => {
   refresh();
 });
 
-$("log-toggle").addEventListener("click", () => {
+$("log-toggle").addEventListener("click", (event) => {
   const log = $("log");
   log.hidden = !log.hidden;
+  event.currentTarget.setAttribute("aria-expanded", String(!log.hidden));
+  if (!log.hidden) {
+    shownLog = null;
+    renderLog(lastLog);
+  }
 });
 
 $("reset").addEventListener("click", async () => {
+  // It also forgets which backup sources work best on each channel, which took
+  // days to learn: worth one confirmation.
+  if (!window.confirm("Reset the counters, the log and the learned source ranking?")) return;
   await chrome.runtime.sendMessage({ source: "ads-remove-popup", type: "reset" });
+  shownLog = null;
   refresh();
 });
 

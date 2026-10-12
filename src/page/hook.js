@@ -1,14 +1,15 @@
 /**
  * The part that runs in the page's MAIN world.
  *
- * Three jobs:
+ * Four jobs:
  *
  * 1. Hook `Worker` — the player fetches its playlists from a Web Worker built
  *    from a blob. Rebuilding that blob with our code prepended is the only way
  *    to see the playlists go by.
  * 2. Tell the engine which channel is being watched — it is in the address, and
  *    the worker does not always see the master playlist.
- * 3. Reload the player on request, and hide an ad that cannot be replaced.
+ * 3. Look after the picture: reload the player on request, unstick it when it
+ *    stops, and hide an ad that cannot be replaced.
  * 4. Obey the off switch, including on the very first line of a page load.
  *
  * The player's own token request is deliberately left untouched. Rewriting its
@@ -139,6 +140,20 @@
         super(target, workerOptions);
         // No `addEventListener` and no `postMessage` on this worker: its message
         // channel belongs to the player, and touching it freezes playback.
+
+        // Our blob holds the whole payload plus Twitch's worker source, and the
+        // player builds a worker on every reload and quality change. Released
+        // once the worker has surely loaded it — a timer, since there is no
+        // event on this worker we may listen to.
+        if (target !== url) {
+          setTimeout(() => {
+            try {
+              URL.revokeObjectURL(target);
+            } catch {
+              /* already gone */
+            }
+          }, 30000);
+        }
       }
     };
   }
@@ -167,7 +182,10 @@
       toExtension("ready", {});
       announcedChannels.clear();
       // A reload builds a new worker, which knows none of this: say it again.
+      // All of it — the channel too. Its memory was set at page load, before
+      // any worker existed, and kept every later one from ever hearing it.
       announcedOrder = "";
+      announcedChannel = "";
       if (channel) channel.postMessage({ key: "ADS_Enabled", enabled });
       broadcastVisibility(true);
       broadcastChannelName();
@@ -176,7 +194,10 @@
     if (data.key === "ADS_Stats") {
       // The watchdog needs this: a reload during a break buys a fresh preroll
       // and unsticks nothing.
-      engineInBreak = Boolean(data.stats && data.stats.inBreak);
+      breakReports.set(data.wid || "w", {
+        inBreak: Boolean(data.stats && data.stats.inBreak),
+        at: Date.now() / 1000,
+      });
       // One line the first time a stream is seen: proof the interception works
       // end to end, without exposing a global object the page could read.
       if (data.stats && data.stats.channel && !announcedChannels.has(data.stats.channel)) {
@@ -191,7 +212,7 @@
       if (event.type === "adLetThrough") {
         console.info(`${TAG} ad cannot be replaced — hiding and muting`);
         hidePlayer(event.duration);
-      } else if (event.type === "breakOver") {
+      } else if (event.type === "breakOver" || event.type === "adReplaced") {
         revealPlayer();
       } else if (event.type === "search" && !event.found) {
         console.info(`${TAG} no clean feed: ${(event.attempts || []).map((a) => a.join("=")).join(", ")}`);
@@ -231,6 +252,28 @@ ${event.body}`);
       return;
     }
     if (data.key === "ADS_Reload") {
+      // The engine's own limits die with its worker, and every reload builds a
+      // new one: the cap of two per break never held, and a new worker asked
+      // again at its first poll. The page outlives them all, so the limits that
+      // matter are enforced here. The worker already declines in a hidden tab;
+      // this is the same rule, where the reload actually happens.
+      const t = Date.now() / 1000;
+      while (engineReloads.length && t - engineReloads[0] > ENGINE_RELOAD_WINDOW) engineReloads.shift();
+      const why =
+        document.visibilityState === "hidden"
+          ? "tab hidden"
+          : t - lastPageReload < ENGINE_RELOAD_COOLDOWN
+            ? "too soon after the last one"
+            : engineReloads.length >= ENGINE_RELOAD_MAX
+              ? `already ${engineReloads.length} in ${ENGINE_RELOAD_WINDOW / 60} min`
+              : "";
+      if (why) {
+        console.info(`${TAG} reload skipped (${data.reason}): ${why}`);
+        toExtension("event", { event: { type: "reloadSkipped", reason: data.reason, why } });
+        return;
+      }
+      engineReloads.push(t);
+      lastPageReload = t;
       const how = reloadPlayer();
       // `console.info`, not `warn`: Chrome collects content-script warnings on
       // the extension's Errors page, where a successful reload would look like
@@ -239,6 +282,14 @@ ${event.body}`);
       toExtension("event", { event: { type: "reloadPerformed", reason: data.reason, how } });
     }
   }
+
+  /** Reloads asked for by the engine, and the limits the page holds them to. */
+  const ENGINE_RELOAD_COOLDOWN = 25;
+  const ENGINE_RELOAD_WINDOW = 180;
+  const ENGINE_RELOAD_MAX = 2;
+  const engineReloads = [];
+  /** Last reload of any kind, engine's or watchdog's. */
+  let lastPageReload = 0;
 
   // -- 2. channel being watched, read from the address ---------------------
 
@@ -288,17 +339,27 @@ ${event.body}`);
    * the previous channel.
    */
   function watchAddress() {
-    const push = history.pushState;
-    history.pushState = function (...args) {
-      const out = push.apply(this, args);
+    let watching = channelFromAddress();
+    const changed = () => {
       announcedChannel = "";
       broadcastChannelName();
-      return out;
+      // Another channel is another player: whatever the last one was doing
+      // says nothing about this one.
+      const now = channelFromAddress();
+      if (now !== watching) {
+        watching = now;
+        resetStall();
+      }
     };
-    window.addEventListener("popstate", () => {
-      announcedChannel = "";
-      broadcastChannelName();
-    });
+    for (const name of ["pushState", "replaceState"]) {
+      const original = history[name];
+      history[name] = function (...args) {
+        const out = original.apply(this, args);
+        changed();
+        return out;
+      };
+    }
+    window.addEventListener("popstate", changed);
   }
 
   // -- 3. player reload ---------------------------------------------------
@@ -436,7 +497,7 @@ ${event.body}`);
     }
 
     // Fallback: does not request a new token, but unsticks a frozen picture.
-    const video = document.querySelector("video");
+    const video = currentVideo();
     if (video) {
       try {
         video.currentTime = video.currentTime; // eslint-disable-line no-self-assign
@@ -465,12 +526,14 @@ ${event.body}`);
   let overlayUntil = 0;
   let overlayTimer = null;
   let mutedBefore = null;
+  /** Elements muted for the current ad, so each is given its sound back. */
+  const mutedVideos = new Set();
 
   function playerContainer() {
     return (
       document.querySelector('[data-a-target="video-player"]') ||
       document.querySelector(".video-player") ||
-      (document.querySelector("video") || {}).parentElement ||
+      (currentVideo() || {}).parentElement ||
       null
     );
   }
@@ -514,10 +577,14 @@ ${event.body}`);
       container.appendChild(overlay);
     }
 
-    const video = document.querySelector("video");
-    if (video && mutedBefore === null) {
-      mutedBefore = video.muted;
+    // The player's own element — `querySelector` returns a sidebar preview —
+    // and on every call: an engine reload right after the ad was let through
+    // builds a new element, which would otherwise play the ad aloud.
+    const video = currentVideo();
+    if (video) {
+      if (mutedBefore === null) mutedBefore = video.muted;
       video.muted = true;
+      mutedVideos.add(video);
     }
 
     if (overlayTimer) clearInterval(overlayTimer);
@@ -537,8 +604,14 @@ ${event.body}`);
     }
     const overlay = document.getElementById(OVERLAY_ID);
     if (overlay) overlay.remove();
-    const video = document.querySelector("video");
-    if (video && mutedBefore !== null) video.muted = mutedBefore;
+    if (mutedBefore !== null) {
+      const video = currentVideo();
+      if (video) mutedVideos.add(video);
+      for (const element of mutedVideos) {
+        if (element.isConnected) element.muted = mutedBefore;
+      }
+    }
+    mutedVideos.clear();
     mutedBefore = null;
   }
 
@@ -575,9 +648,32 @@ ${event.body}`);
    */
   const STALL_NUDGE_SECONDS = 6;
 
+  /** Reloads allowed for one stall. Past that, the watchdog waits for progress. */
+  const STALL_RELOAD_MAX = 2;
+
+  /**
+   * Seconds a tab must have been visible before a reload.
+   *
+   * Chrome holds back the media of a tab in the background and starts it when
+   * the tab is shown. Reloading on that very instant replaced a player that was
+   * about to start with one that had to begin again — and buy a preroll.
+   */
+  const VISIBLE_GRACE = 5;
+
   let lastAdvance = 0;
   let lastSeenTime = -1;
+  /** The element `lastSeenTime` was read from. */
+  let watchedVideo = null;
+  /**
+   * Whether the picture has been seen moving since the page or the channel
+   * changed. Until it has, there is no stall to speak of: a channel offline, a
+   * page with no player, a tab opened in the background and not yet started.
+   * Starting the clock without this reloaded those pages every minute.
+   */
+  let armed = false;
   let lastStallReload = 0;
+  let reloadsThisStall = 0;
+  let visibleSince = document.visibilityState === "hidden" ? 0 : Date.now() / 1000;
   let stallAnnounced = false;
   /** Remedies already tried on the current stall, so each is tried once. */
   let nudgedThisStall = false;
@@ -585,8 +681,24 @@ ${event.body}`);
   /** When we last paused the player ourselves, and how long that lasts. */
   let nudgedAt = 0;
   const NUDGE_GRACE = 3;
-  /** Whether the engine says an ad break is running, from its own telemetry. */
-  let engineInBreak = false;
+  /**
+   * Which workers last said an ad break was running, and when.
+   *
+   * Per worker, not one flag: every worker on the page reports, and a single
+   * value was overwritten by whichever spoke last — an idle one saying "no
+   * break" every two seconds let the watchdog reload in the middle of an ad.
+   */
+  const breakReports = new Map(); // wid -> {inBreak, at}
+  const BREAK_REPORT_FRESH = 6;
+
+  function engineInBreak() {
+    const t = Date.now() / 1000;
+    for (const [wid, report] of breakReports) {
+      if (t - report.at > BREAK_REPORT_FRESH * 10) breakReports.delete(wid);
+      else if (report.inBreak && t - report.at <= BREAK_REPORT_FRESH) return true;
+    }
+    return false;
+  }
 
   /**
    * The player's own video element, which is the biggest one on the page.
@@ -623,13 +735,38 @@ ${event.body}`);
     return Boolean(channelFromAddress());
   }
 
-  /** Note any progress, and return whether the picture is moving. */
+  /** Forget the current stall and wait to see the picture move again. */
+  function resetStall() {
+    armed = false;
+    lastAdvance = 0;
+    lastSeenTime = -1;
+    watchedVideo = null;
+    stallAnnounced = false;
+    nudgedThisStall = false;
+    reloadsThisStall = 0;
+    lastRemedy = "";
+  }
+
+  /**
+   * Note any progress, and return whether the picture is moving.
+   *
+   * Progress is a change of `currentTime` on the same element between two
+   * readings. The first reading of an element is only a reference: a player
+   * that was never started reads 0, and taking that for movement started the
+   * stall clock on a picture that had not yet had a chance to play.
+   */
   function sampleProgress() {
     const video = currentVideo();
     if (!video) return false;
+    if (video !== watchedVideo) {
+      watchedVideo = video;
+      lastSeenTime = video.currentTime;
+      return false;
+    }
     if (video.currentTime !== lastSeenTime) {
       lastSeenTime = video.currentTime;
       lastAdvance = Date.now() / 1000;
+      armed = true;
       return true;
     }
     return false;
@@ -650,7 +787,13 @@ ${event.body}`);
   }
 
   function checkStall() {
-    if (!enabled || !shouldBePlaying()) return;
+    if (!enabled || !shouldBePlaying()) {
+      // Off a channel page, the stall clock must not keep running: coming back
+      // to a channel ten minutes later found it ten minutes old, and the new
+      // player was nudged and reloaded while it was still being built.
+      if (armed || watchedVideo) resetStall();
+      return;
+    }
     // Read before sampling: a picture that moves again resets `lastAdvance`,
     // and measuring after that always reported a recovery of zero seconds.
     const stoppedAt = lastAdvance;
@@ -669,15 +812,13 @@ ${event.body}`);
       }
       stallAnnounced = false;
       nudgedThisStall = false;
+      reloadsThisStall = 0;
       lastRemedy = "";
       return;
     }
+    if (!armed) return; // nothing has played yet: nothing can have stopped
     if (pausedByChoice()) {
       lastAdvance = Date.now() / 1000; // paused on purpose: the clock does not run
-      return;
-    }
-    if (!lastAdvance) {
-      lastAdvance = Date.now() / 1000; // nothing has played yet; start the clock
       return;
     }
 
@@ -716,7 +857,7 @@ ${event.body}`);
     // greets a new session with a preroll — so reloading through an ad trades a
     // stuck picture for another ad. The engine has its own reload policy for
     // breaks, with a cap per break; this one is for live content.
-    if (engineInBreak) return;
+    if (engineInBreak()) return;
 
     // Never in a hidden tab either: wait for the user to come back, then act at
     // once. Measured: a reload in a hidden tab took 121 seconds and a second
@@ -724,14 +865,21 @@ ${event.body}`);
     // between. Chrome throttles the timers of a hidden page unless it is playing
     // sound, and a reloaded player has not started playing yet — so it gets no
     // exemption and cannot even start. The player it replaced at least had a
-    // buffer. Coming back to the tab fires `visibilitychange`, which runs this
-    // check with the stall already past its threshold, so the reload happens
-    // the moment it can work.
+    // buffer. Coming back to the tab gives the player `VISIBLE_GRACE` seconds
+    // to start on its own; the check then finds the stall already past its
+    // threshold and reloads.
     if (document.visibilityState === "hidden") return;
 
     const t = Date.now() / 1000;
+    if (t - visibleSince < VISIBLE_GRACE) return;
     if (t - lastStallReload < STALL_RELOAD_COOLDOWN) return;
+    // A player that two reloads did not bring back will not be brought back by
+    // a third. Reloading for ever only bought a preroll a minute.
+    if (reloadsThisStall >= STALL_RELOAD_MAX) return;
+    if (t - lastPageReload < STALL_RELOAD_COOLDOWN) return;
+    reloadsThisStall += 1;
     lastStallReload = t;
+    lastPageReload = t;
     const how = reloadPlayer();
     lastRemedy = "reload";
     console.info(`${TAG} reloading the player to unstick it -> ${how}`);
@@ -752,7 +900,10 @@ ${event.body}`);
       document.addEventListener(name, () => checkStall(), true);
     }
     setInterval(checkStall, 2000);
-    document.addEventListener("visibilitychange", () => checkStall());
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "hidden") visibleSince = Date.now() / 1000;
+      checkStall();
+    });
   }
 
   // -- 6. the off switch --------------------------------------------------
@@ -761,10 +912,9 @@ ${event.body}`);
    * Apply a switch change to a page that is already open.
    *
    * Switching off takes effect at once: the worker stops reading playlists and
-   * any overlay is cleared. What cannot be undone live is the `Worker` subclass
-   * — it was installed before the player existed, and removing it now would not
-   * affect the worker already running. Switching back on therefore needs a
-   * reload, which is what the popup says.
+   * any overlay is cleared. Switching back on reaches every worker that was
+   * built with the engine in it; one built while the switch was off has none,
+   * and only a reload replaces it — which is what the popup says.
    */
   function applySwitch(next) {
     if (next === enabled) return;
@@ -773,10 +923,6 @@ ${event.body}`);
     if (channel) channel.postMessage({ key: "ADS_Enabled", enabled });
     if (!enabled) revealPlayer();
 
-    if (enabled && !hookInstalled) {
-      console.info(`${TAG} switched on — reload the page to hook the player`);
-      return;
-    }
     console.info(`${TAG} switched ${enabled ? "on" : "off"}`);
   }
 
@@ -802,8 +948,7 @@ ${event.body}`);
     if (event.source !== window) return;
     const data = event.data;
     if (!data || data.source !== "ads-remove-extension") return;
-    if (data.type === "reload") reloadPlayer();
-    else if (data.type === "setEnabled") applySwitch(data.enabled !== false);
+    if (data.type === "setEnabled") applySwitch(data.enabled !== false);
     else if (data.type === "ranking") applyRanking(data.order);
   });
 
@@ -814,13 +959,14 @@ ${event.body}`);
   watchVisibility();
   watchPicture();
 
-  if (!enabled) {
-    console.info(`${TAG} switched off — the player is left untouched`);
-    return;
-  }
-
+  // Hooked even when switched off: the subclass is a pure pass-through while
+  // off. The mirror read above can be stale — it is only written by an open
+  // Twitch tab of this origin — and skipping the hook on its word left a whole
+  // page unprotected after the switch had been turned back on elsewhere. The
+  // bridge corrects `enabled` long before the player builds its worker.
   hookWorker();
+  if (!enabled) console.info(`${TAG} switched off — the player is left untouched`);
   broadcastVisibility(true);
   broadcastChannelName();
-  console.info(`${TAG} hook installed`);
+  if (enabled) console.info(`${TAG} hook installed`);
 })();

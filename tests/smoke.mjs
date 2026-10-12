@@ -303,11 +303,11 @@ async function main() {
   ];
 
   console.log("");
-  for (const [name, ok] of steps) console.log(`${ok ? "OK  " : "RATE"} ${name}`);
+  for (const [name, ok] of steps) console.log(`${ok ? "OK  " : "FAIL"} ${name}`);
   const count = (reason) => logLines.filter((l) => l.includes(reason)).length;
-  console.log(`     coupures rencontrees : ${count("ad break ")}`);
-  console.log(`     playlists remplacees : ${count("feed replaced")}`);
-  console.log(`     lecteur relance      : ${count("reloading player")}`);
+  console.log(`     ad breaks seen       : ${count("ad break ")}`);
+  console.log(`     feeds replaced       : ${count("feed replaced")}`);
+  console.log(`     player reloads       : ${count("reloading player")}`);
 
   return steps.every(([, ok]) => ok) ? 0 : 1;
 }

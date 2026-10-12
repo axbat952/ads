@@ -883,3 +883,94 @@ describe("a source switch joins where the picture is", () => {
     assert.match(line.message, /joins at -16\.0s/);
   });
 });
+
+describe("review fixes — one break is one break", () => {
+  const URL_720 = `${ORIGINE}/720p60.m3u8`;
+
+  it("does not count a rendition that joins a running break late as a new one", async () => {
+    const { blocker, time } = setup({ clean: ["popout"] });
+    for (let i = 0; i < 8; i += 1) {
+      await blocker.onMedia(URL_MEDIA, midroll());
+      time.t += 2;
+    }
+    // 16 s in, the player changes quality: a URL never seen, already in the break.
+    await blocker.onMedia(URL_720, midroll());
+    assert.equal(blocker.stats().breaks, 1);
+  });
+
+  it("counts an ad let through once per break, not once per poll", async () => {
+    const { blocker, time } = setup({ clean: [] });
+    for (let i = 0; i < 10; i += 1) {
+      await blocker.onMedia(URL_MEDIA, preroll());
+      time.t += 2;
+    }
+    assert.equal(blocker.stats().adsLetThrough, 1);
+  });
+
+  it("enters one line in the tally per break, whatever the renditions", async () => {
+    const { blocker } = setup({ clean: ["popout"] });
+    await blocker.onMedia(URL_MEDIA, midroll());
+    await blocker.onMedia(URL_720, midroll());
+    assert.deepEqual(blocker.stats().tally, { demo_channel: [1, 0] });
+  });
+
+  it("holds the reload cap even when every reload brings new playlist URLs", async () => {
+    const { blocker, time, reloads } = setup({ clean: [] });
+    // A long unblockable break, polled every 2 s; each reload switches the
+    // player to a playlist URL it has never used.
+    for (let i = 0; i < 6; i += 1) {
+      for (let k = 0; k < 15; k += 1) {
+        await blocker.onMedia(`${ORIGINE}/reload-${i}.m3u8`, preroll());
+        time.t += 2;
+      }
+    }
+    assert.ok(reloads.length <= 2, `${reloads.length} reloads for one break`);
+  });
+
+  it("uncovers the picture when a clean feed turns up after the ad was let through", async () => {
+    const clean = []; // read by the fake at every call
+    const { blocker, events, time } = setup({ clean });
+    await blocker.onMedia(URL_MEDIA, preroll());
+    assert.ok(events.some((e) => e.type === "adLetThrough"));
+    assert.equal(blocker.stats().adNotBlocked, true);
+
+    clean.push("popout"); // a source that was stitched comes back clean
+    time.t += 70; // past the back-off
+    const served = await blocker.onMedia(URL_MEDIA, preroll());
+    assert.ok(served.includes("clean-0.ts"), "the clean feed is served");
+    assert.ok(events.some((e) => e.type === "adReplaced"), "and the page is told");
+    assert.equal(blocker.stats().adNotBlocked, false);
+    assert.deepEqual(blocker.stats().tally, { demo_channel: [1, 0] }, "the verdict is corrected");
+  });
+
+  it("does not count a five-minute gap as five minutes of ad", async () => {
+    const { blocker, time } = setup({ clean: ["popout"] });
+    await blocker.onMedia(URL_MEDIA, midroll());
+    time.t += 300;
+    await blocker.onMedia(URL_MEDIA, midroll());
+    assert.ok(blocker.stats().adTimeAvoided <= 12, `${blocker.stats().adTimeAvoided}s`);
+  });
+});
+
+describe("review fixes — sources and numbering", () => {
+  it("never lets a degraded source jump ahead of a source-quality one", async () => {
+    const { blocker } = setup({ clean: ["popout", "thunderdome"] });
+    blocker.setRanking(["thunderdome/web", "popout/web"]);
+    await blocker.onMedia(URL_MEDIA, preroll());
+    assert.deepEqual(blocker.stats().backupFeeds, ["popout/web"]);
+  });
+
+  it("keeps the sequence moving forward across switching off and on", async () => {
+    const { blocker } = setup({ clean: ["popout"], cleanBody: direct("clean") });
+    const withSequence = (body, n) => body.replace(/#EXT-X-MEDIA-SEQUENCE:\d+/, `#EXT-X-MEDIA-SEQUENCE:${n}`);
+    await blocker.onMedia(URL_MEDIA, withSequence(direct(), 8421));
+    await blocker.onMedia(URL_MEDIA, withSequence(midroll(), 8424));
+    await blocker.onMedia(URL_MEDIA, withSequence(direct(), 8427));
+    blocker.setEnabled(false);
+    const raw = await blocker.onMedia(URL_MEDIA, withSequence(direct(), 8441));
+    assert.equal(readMediaSequence(raw), 8441, "off: Twitch's own numbers");
+    blocker.setEnabled(true);
+    const back = await blocker.onMedia(URL_MEDIA, withSequence(direct(), 8442));
+    assert.equal(readMediaSequence(back), 8442, "numbering resumes from what the player was seeing");
+  });
+});

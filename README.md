@@ -18,11 +18,14 @@ a different `playerType`. Those feeds are usually not stitched. The extension:
 1. hooks the player's Web Worker, where playlists are actually fetched;
 2. on each media playlist, detects a break from the segment titles and the
    `#EXT-X-DATERANGE` markers;
-3. fetches an ad-free feed for one of nine alternative `playerType` values, in
-   parallel, and serves it in place of the ad — matching the rendition the player
-   asked for, and flagging the timeline change;
-4. if every candidate is stitched too, it reloads the player to give Twitch
-   another chance, and covers and mutes the player meanwhile.
+3. fetches an ad-free feed for one of eleven alternative `playerType` values
+   (nine at source quality, two reduced ones tried last), in parallel, and serves
+   it in place of the ad — matching the rendition the player asked for, joining
+   it where the picture is, and flagging the timeline change;
+4. if every candidate is stitched too, it covers and mutes the player, and
+   reloads it to give Twitch another chance — at most twice in three minutes,
+   and never while the tab is in the background, where a rebuilt player cannot
+   start.
 
 The result is uniform: either the ad is replaced by the live stream, or it is
 hidden. It is never watched.

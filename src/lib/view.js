@@ -39,8 +39,18 @@ export function status(stats) {
     return {
       title: "Switched off",
       detail:
-        "The engine is not running and ads play normally. Reload any open Twitch " +
-        "tab to switch back on — the player builds its worker once, at page load.",
+        "The engine is not running and ads play normally. The switch above turns " +
+        "it back on; a Twitch tab opened while it was off needs a reload.",
+      colour: COLOURS.muted,
+    };
+  }
+  // No tab is reporting a stream: nothing to say about ads either way. Saying
+  // "No ad — the live stream is playing" with no stream open was a promise
+  // about something that did not exist.
+  if (!stats.channel) {
+    return {
+      title: "Waiting for a stream",
+      detail: "Open a live channel on Twitch; its status shows here.",
       colour: COLOURS.muted,
     };
   }
@@ -178,5 +188,6 @@ export function lastBreakLine(stats) {
   const roll = brk.roll || "?";
   const duration = Math.round(brk.duration || 0);
   const spots = brk.spots || 0;
-  return `Last break: ${roll}, ${duration}s, ${spots} spot${spots > 1 ? "s" : ""}`;
+  const pod = spots ? `, ${spots} spot${spots > 1 ? "s" : ""}` : "";
+  return `Last break: ${roll}, ${duration}s${pod}`;
 }

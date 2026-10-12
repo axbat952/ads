@@ -214,7 +214,12 @@ export function installHook(scope, options = {}) {
 
   const blocker = createBlocker({
     fetcher,
+    // Declined in a hidden tab, and said so: the engine then neither counts it
+    // against its cap nor waits to see what it achieved. A player rebuilt in
+    // the background cannot start — measured at 121 seconds to recover, with a
+    // second reload — so asking for one there only turned an ad into a freeze.
     onReload: (reason) => {
+      if (hidden) return false;
       send({ key: "ADS_Reload", reason });
       return true;
     },
@@ -254,7 +259,9 @@ export function installHook(scope, options = {}) {
     stallReported = false;
 
     const response = await originalFetch(input, init);
-    if (!response.ok) return response;
+    // 204 and 205 carry no body by definition, and a `Response` built around
+    // one throws: such an answer is passed on as it came.
+    if (!response.ok || response.status === 204 || response.status === 205) return response;
 
     // Read the body ONCE, never through `clone()`.
     //
@@ -264,12 +271,10 @@ export function installHook(scope, options = {}) {
     // unread — on every poll, of every rendition, for the life of the tab.
     // Nothing reclaims those, and the reading the engine does is exactly the
     // reading the player needs, so there was never a second branch to justify.
-    let text;
-    try {
-      text = await response.text();
-    } catch {
-      return response;
-    }
+    // A failed read (the player aborted its own request, the connection
+    // dropped) is the player's to see. Handing back `response` instead gave it
+    // a body already consumed, and a "Body is unusable" in place of the cause.
+    const text = await response.text();
 
     // From here the body is consumed: the player can only be served a response
     // built from the text, never `response` itself.
@@ -313,8 +318,16 @@ export function installHook(scope, options = {}) {
       const data = event && event.data;
       if (data && data.key === "ADS_Channel") blocker.setChannel(data.channel);
       else if (data && data.key === "ADS_Enabled") {
+        const was = enabled;
         enabled = data.enabled !== false;
         blocker.setEnabled(enabled);
+        // While off, polls are not watched. Measuring the silence from the last
+        // one seen before then reported the player as stopped for as long as
+        // the switch had been off.
+        if (enabled && !was) {
+          lastPoll = Date.now();
+          stallReported = false;
+        }
       } else if (data && data.key === "ADS_Ranking") blocker.setRanking(data.order);
       else if (data && data.key === "ADS_Visible") hidden = data.hidden === true;
     });
@@ -322,7 +335,9 @@ export function installHook(scope, options = {}) {
 
   const timer = setInterval(() => {
     if (!enabled) return;
-    send({ key: "ADS_Stats", stats: blocker.stats() });
+    // `hidden` travels with the stats: with two Twitch tabs open, the panel
+    // shows the one in view rather than whichever spoke last.
+    send({ key: "ADS_Stats", stats: { ...blocker.stats(), hidden } });
 
     const silent = lastPoll ? Date.now() - lastPoll : 0;
     if (silent > STALL_MS && !stallReported) {
