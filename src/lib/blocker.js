@@ -19,6 +19,7 @@
 import {
   countPrefetch,
   countSegments,
+  dropLeadingSegments,
   hasAdMarkers,
   isAdBreak,
   markDiscontinuity,
@@ -27,6 +28,7 @@ import {
   qualityLabel,
   readMediaSequence,
   rollType,
+  segmentTimes,
   stripAds,
   stripHevcVariants,
   writeMediaSequence,
@@ -39,6 +41,30 @@ import {
   findCleanStream,
   orderCandidates,
 } from "./stream.js";
+
+/**
+ * Where to join a new feed so that the player neither replays nor skips.
+ *
+ * `heldUntil` is the content time the player already holds pictures up to.
+ * The join is the first segment that is mostly new; when the new feed is
+ * behind and every segment is old, its last segment, which replays the least.
+ * Without timestamps on either side there is nothing to align on, and the feed
+ * is joined at its start as before.
+ *
+ * `gap` is the content time between what was held and the joined segment, in
+ * seconds: positive skips ahead, negative replays.
+ */
+export function joinPoint(body, heldUntil) {
+  const times = segmentTimes(body);
+  if (!times.length || !Number.isFinite(heldUntil)) return { index: 0, gap: NaN };
+  let index = times.findIndex(
+    (t) => Number.isFinite(t.start) && t.start + t.duration * 500 > heldUntil,
+  );
+  if (index === -1) index = times.length - 1;
+  const start = times[index].start;
+  if (!Number.isFinite(start)) return { index: 0, gap: NaN };
+  return { index, gap: (start - heldUntil) / 1000 };
+}
 
 /** How long a backup feed stays valid, in seconds. */
 export const BACKUP_TTL = 240;
@@ -153,6 +179,9 @@ export function createBlocker({
         // on, for as long as it stays in the window. -1 once it has scrolled
         // out, or before anything was switched.
         discontinuityAt: -1,
+        // Content time (ms) up to which the player already holds pictures:
+        // the end of the last segment served, prefetch included.
+        heldUntil: NaN,
       };
       states.set(url, state);
     }
@@ -303,7 +332,17 @@ export function createBlocker({
 
     if (state.serving !== source) {
       state.serving = source;
-      state.sequenceOffset = state.lastSequence >= 0 ? state.lastSequence + 1 - sourceSequence : 0;
+      // Join the new feed where the old one left off, not at its oldest segment.
+      //
+      // The new source used to be numbered from the first segment it listed.
+      // A Twitch window holds the last fifteen to thirty seconds, so the player
+      // went back and played all of it again: at the end of every break, the
+      // seconds already watched on the replacement feed came round a second
+      // time. The segment to join on is found by content time, which both
+      // feeds share; the ones before it are already on screen.
+      const join = state.lastSequence >= 0 ? joinPoint(body, state.heldUntil) : { index: 0, gap: NaN };
+      state.sequenceOffset =
+        state.lastSequence >= 0 ? state.lastSequence + 1 - (sourceSequence + join.index) : 0;
       // Remember WHICH segment the boundary falls on, not just that there is
       // one. The tag used to be written on the single poll where the source
       // changed and never again: on the next poll the window had slid by one,
@@ -312,11 +351,23 @@ export function createBlocker({
       // a segment that follows a discontinuity must go on following it for as
       // long as it is listed — a player that sees one appear and disappear
       // before the same segment can no longer place what comes after.
-      state.discontinuityAt = sourceSequence + state.sequenceOffset;
-      log("info", `switched source -> ${source.startsWith("backup:") ? "replacement feed" : "original feed"} (discontinuity flagged)`);
+      state.discontinuityAt = sourceSequence + join.index + state.sequenceOffset;
+      const where = Number.isFinite(join.gap)
+        ? `, joins at ${join.gap >= 0 ? "+" : ""}${join.gap.toFixed(1)}s`
+        : "";
+      log("info", `switched source -> ${source.startsWith("backup:") ? "replacement feed" : "original feed"} (discontinuity flagged${where})`);
     }
 
-    const served = sourceSequence + state.sequenceOffset;
+    let served = sourceSequence + state.sequenceOffset;
+
+    // Segments ahead of the join are what the player has already shown. They
+    // are left out rather than numbered below it: numbers the player already
+    // holds would be duplicates at best, and below zero at the very start.
+    if (state.discontinuityAt > served) {
+      const drop = Math.min(state.discontinuityAt - served, Math.max(0, countSegments(out) - 1));
+      out = dropLeadingSegments(out, drop);
+      served += drop;
+    }
 
     if (state.discontinuityAt >= 0) {
       const at = state.discontinuityAt - served;
@@ -324,7 +375,7 @@ export function createBlocker({
       else out = markDiscontinuity(out, at);
     }
 
-    if (state.sequenceOffset !== 0) out = writeMediaSequence(out, served);
+    if (served !== sourceSequence) out = writeMediaSequence(out, served);
     // The highest number the player can already HOLD, which is not the last
     // listed segment: it has also downloaded the prefetch segments that follow.
     //
@@ -341,8 +392,15 @@ export function createBlocker({
     // Numbering past them leaves a gap instead of a collision. A live playlist
     // that jumps forward is one the player skips along; one that reuses numbers
     // is one it cannot follow.
-    const listed = Math.max(0, countSegments(body) - 1);
-    state.lastSequence = Math.max(state.lastSequence, served + listed + countPrefetch(body));
+    const listed = Math.max(0, countSegments(out) - 1);
+    const prefetched = countPrefetch(out);
+    state.lastSequence = Math.max(state.lastSequence, served + listed + prefetched);
+
+    const times = segmentTimes(out);
+    const last = times[times.length - 1];
+    if (last && Number.isFinite(last.start)) {
+      state.heldUntil = last.start + last.duration * 1000 * (1 + prefetched);
+    }
     return out;
   }
 

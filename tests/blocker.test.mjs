@@ -811,3 +811,75 @@ describe("a source switch never reuses a prefetched number", () => {
     assert.equal(readMediaSequence(back), 110, "live resumes after 109, not at 108");
   });
 });
+
+describe("a source switch joins where the picture is", () => {
+  /**
+   * The new feed used to be numbered from the oldest segment it listed. A
+   * Twitch window spans fifteen to thirty seconds, so the player played all of
+   * it again: at the end of every break, the seconds just watched on the
+   * replacement feed came round a second time. Both feeds stamp their segments
+   * with the same clock, which is what places one against the other.
+   */
+  const T0 = Date.parse("2026-10-12T20:00:00.000Z");
+
+  /** Six 2s segments whose content starts `from` seconds after T0. */
+  function stamped(mark, first, from, prefetch = 0) {
+    const out = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:3", `#EXT-X-MEDIA-SEQUENCE:${first}`];
+    for (let i = 0; i < 6; i += 1) {
+      out.push(
+        `#EXT-X-PROGRAM-DATE-TIME:${new Date(T0 + (from + 2 * i) * 1000).toISOString()}`,
+        "#EXTINF:2.000,live",
+        `https://cdn.example/${mark}-${from + 2 * i}.ts`,
+      );
+    }
+    for (let i = 0; i < prefetch; i += 1) {
+      out.push(`#EXT-X-TWITCH-PREFETCH:https://cdn.example/${mark}-p${i}.ts`);
+    }
+    return `${out.join("\n")}\n`;
+  }
+
+  /** URIs of the segments served, in order. */
+  const uris = (body) => body.split("\n").filter((l) => l.startsWith("https://"));
+
+  it("skips what the player already holds when it moves to the replacement", async () => {
+    // Original: 0..10s listed, two prefetched → the player holds up to 16s.
+    // Replacement window: 6..16s. Only the segment starting at 16s is new.
+    const { blocker, events } = setup({ clean: ["popout"], cleanBody: stamped("clean", 500, 6) });
+    await blocker.onMedia(URL_MEDIA, stamped("a", 100, 0, 2));
+
+    const swapped = await blocker.onMedia(URL_MEDIA, preroll());
+    assert.deepEqual(uris(swapped), ["https://cdn.example/clean-16.ts"]);
+    assert.equal(readMediaSequence(swapped), 108, "after 107, the last prefetched number");
+    assert.ok(/#EXT-X-DISCONTINUITY\n#EXT-X-PROGRAM-DATE-TIME[^\n]*\n#EXTINF/.test(swapped) ||
+      /#EXT-X-PROGRAM-DATE-TIME[^\n]*\n#EXT-X-DISCONTINUITY\n#EXTINF/.test(swapped));
+    const line = events.find((e) => e.type === "log" && /switched source -> replacement feed/.test(e.message));
+    assert.match(line.message, /joins at \+0\.0s/);
+  });
+
+  it("does not replay the replacement on the way back to live", async () => {
+    const { blocker } = setup({ clean: ["popout"], cleanBody: stamped("clean", 500, 6) });
+    await blocker.onMedia(URL_MEDIA, stamped("a", 100, 0, 2));
+    await blocker.onMedia(URL_MEDIA, preroll()); // holds up to 18s, numbered up to 108
+
+    // Back to live with a window of 8..18s: everything but 18s was seen.
+    const back = await blocker.onMedia(URL_MEDIA, stamped("a", 140, 8, 2));
+    assert.deepEqual(uris(back), ["https://cdn.example/a-18.ts"]);
+    assert.equal(readMediaSequence(back), 109);
+
+    // The window slides: numbering carries on, nothing seen comes back.
+    const next = await blocker.onMedia(URL_MEDIA, stamped("a", 141, 10, 2));
+    assert.equal(readMediaSequence(next), 109);
+    assert.deepEqual(uris(next), ["https://cdn.example/a-18.ts", "https://cdn.example/a-20.ts"]);
+    assert.equal((next.match(/#EXT-X-DISCONTINUITY/g) || []).length, 1, "still on the same segment");
+  });
+
+  it("replays as little as possible when the new feed is behind", async () => {
+    const { blocker, events } = setup({ clean: ["popout"], cleanBody: stamped("clean", 500, 0) });
+    await blocker.onMedia(URL_MEDIA, stamped("a", 100, 10, 2)); // holds up to 26s
+
+    const swapped = await blocker.onMedia(URL_MEDIA, preroll());
+    assert.deepEqual(uris(swapped), ["https://cdn.example/clean-10.ts"], "its last segment only");
+    const line = events.find((e) => e.type === "log" && /switched source -> replacement feed/.test(e.message));
+    assert.match(line.message, /joins at -16\.0s/);
+  });
+});

@@ -350,6 +350,76 @@ export function countPrefetch(text) {
 }
 
 /**
+ * Content time of every listed segment, from `#EXT-X-PROGRAM-DATE-TIME`.
+ *
+ * Returns one `{start, duration}` per segment, in order: `start` in
+ * milliseconds since the epoch, `duration` in seconds. A segment without a tag
+ * of its own follows the one before it; `start` is NaN when nothing places it.
+ *
+ * Two Twitch sessions of the same broadcast number their segments however they
+ * like, but they stamp them with the same clock — the only thing that says
+ * which segment of one feed shows the same moment as a segment of another.
+ */
+export function segmentTimes(text) {
+  const out = [];
+  let pending = NaN;
+  for (const line of lines(text)) {
+    if (line.startsWith("#EXT-X-PROGRAM-DATE-TIME:")) {
+      pending = Date.parse(line.slice("#EXT-X-PROGRAM-DATE-TIME:".length).trim());
+    } else if (line.startsWith("#EXTINF:")) {
+      const match = EXTINF_RE.exec(line);
+      const duration = match ? toFloat(match[1]) : 0;
+      const previous = out[out.length - 1];
+      const start = Number.isFinite(pending)
+        ? pending
+        : previous
+          ? previous.start + previous.duration * 1000
+          : NaN;
+      out.push({ start, duration });
+      pending = NaN;
+    }
+  }
+  return out;
+}
+
+/**
+ * Remove the first `count` segments, with the tags that belong to them.
+ *
+ * The media sequence is left alone: the caller knows what number the first
+ * remaining segment must carry, and writes it.
+ */
+export function dropLeadingSegments(text, count) {
+  if (!(count > 0)) return text;
+  const out = [];
+  let attached = []; // tags that describe the segment about to come
+  let index = 0;
+  let skipNextUrl = false;
+  for (const line of lines(text)) {
+    if (skipNextUrl && line.trim() && !line.startsWith("#")) {
+      skipNextUrl = false;
+      continue;
+    }
+    if (line.startsWith("#EXT-X-PROGRAM-DATE-TIME:") || line.startsWith("#EXT-X-DISCONTINUITY")) {
+      attached.push(line);
+      continue;
+    }
+    if (line.startsWith("#EXTINF:")) {
+      if (index < count) {
+        index += 1;
+        attached = [];
+        skipNextUrl = true;
+        continue;
+      }
+      index += 1;
+    }
+    out.push(...attached, line);
+    attached = [];
+  }
+  out.push(...attached);
+  return out.join("\n");
+}
+
+/**
  * Insert `#EXT-X-DISCONTINUITY` before the first segment.
  *
  * Required on every source switch. Segments then come from another playback

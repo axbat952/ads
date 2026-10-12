@@ -11,6 +11,8 @@ import { describe, it } from "node:test";
 
 import {
   adSegments,
+  countSegments,
+  dropLeadingSegments,
   hasAdMarkers,
   isAdBreak,
   isMaster,
@@ -22,6 +24,7 @@ import {
   qualityLabel,
   readMediaSequence,
   rollType,
+  segmentTimes,
   stripAds,
   stripHevcVariants,
   writeMediaSequence,
@@ -286,5 +289,23 @@ describe("markDiscontinuity", () => {
   it("leaves a segment-less playlist alone", () => {
     const empty = "#EXTM3U\n#EXT-X-VERSION:3\n";
     assert.equal(markDiscontinuity(empty), empty);
+  });
+});
+
+describe("segment times", () => {
+  it("reads the content time of every segment of a real playlist", () => {
+    const times = segmentTimes(PREROLL);
+    assert.equal(times.length, 5);
+    assert.equal(times[0].start, Date.parse("2026-09-13T11:16:18.219Z"));
+    assert.equal(times[4].start - times[0].start, 8000);
+    assert.equal(times[4].duration, 2);
+  });
+
+  it("drops leading segments with their own tags only", () => {
+    const out = dropLeadingSegments(PREROLL, 3);
+    assert.equal(countSegments(out), 2);
+    assert.equal(segmentTimes(out)[0].start, Date.parse("2026-09-13T11:16:24.219Z"));
+    assert.ok(out.includes("#EXT-X-MEDIA-SEQUENCE:0"), "the caller writes the sequence");
+    assert.ok(out.includes('CLASS="twitch-stitched-ad"'), "the header is kept");
   });
 });
