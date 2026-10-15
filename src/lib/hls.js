@@ -468,27 +468,38 @@ export function dropLeadingSegments(text, count) {
 }
 
 /**
- * Insert `#EXT-X-DISCONTINUITY` before the first segment.
+ * Insert `#EXT-X-DISCONTINUITY` before the segment at position `before`.
  *
  * Required on every source switch. Segments then come from another playback
  * session whose timestamps are rewritten independently; without the tag audio
  * resynchronises but the picture freezes.
+ *
+ * Positions run over the listed segments, then on over the prefetch lines,
+ * which are the segments that follow: a switch can land on one of those, and
+ * the player downloads it before it is ever listed — the tag has to be in
+ * front of it from the first poll that names it.
  */
 export function markDiscontinuity(text, before = 0) {
   if (before < 0) return text;
   const all = lines(text);
   let seen = 0;
   for (let i = 0; i < all.length; i += 1) {
-    if (!all[i].startsWith("#EXTINF:")) continue;
+    const prefetch = all[i].startsWith("#EXT-X-TWITCH-PREFETCH:");
+    if (!prefetch && !all[i].startsWith("#EXTINF:")) continue;
     if (seen !== before) {
       seen += 1;
       continue;
     }
-    // Already there? Twitch writes it ahead of the segment's other tags —
-    // DISCONTINUITY, then PROGRAM-DATE-TIME, then EXTINF — so the line just
-    // above is not enough: every tag back to the previous segment is looked at.
-    for (let j = i - 1; j >= 0 && all[j].startsWith("#"); j -= 1) {
-      if (isDiscontinuity(all[j])) return text;
+    if (prefetch) {
+      // A prefetch line has no tags of its own: only the line above counts.
+      if (i > 0 && isDiscontinuity(all[i - 1])) return text;
+    } else {
+      // Already there? Twitch writes it ahead of the segment's other tags —
+      // DISCONTINUITY, then PROGRAM-DATE-TIME, then EXTINF — so the line just
+      // above is not enough: every tag back to the previous segment is looked at.
+      for (let j = i - 1; j >= 0 && all[j].startsWith("#"); j -= 1) {
+        if (isDiscontinuity(all[j])) return text;
+      }
     }
     return [...all.slice(0, i), "#EXT-X-DISCONTINUITY", ...all.slice(i)].join("\n");
   }

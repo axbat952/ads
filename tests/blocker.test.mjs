@@ -974,3 +974,54 @@ describe("review fixes — sources and numbering", () => {
     assert.equal(readMediaSequence(back), 8442, "numbering resumes from what the player was seeing");
   });
 });
+
+describe("the return to live joins on a prefetched segment, never the last", () => {
+  /**
+   * The case every log showed: the player had prefetched two segments of the
+   * replacement, and the original had nothing listed that recent — its
+   * matching segments were still in its own prefetch. Joining among the listed
+   * ones replayed six seconds, every break. Joining on the LAST prefetch line
+   * replayed nothing but stalled one return in five: that segment is the live
+   * edge, not yet produced. The one before it is the compromise measured safe.
+   */
+  const T0 = Date.parse("2026-10-15T20:00:00.000Z");
+  function stamped(mark, first, from, prefetch) {
+    const out = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:3", `#EXT-X-MEDIA-SEQUENCE:${first}`];
+    for (let i = 0; i < 6; i += 1) {
+      out.push(
+        `#EXT-X-PROGRAM-DATE-TIME:${new Date(T0 + (from + 2 * i) * 1000).toISOString()}`,
+        "#EXTINF:2.000,live",
+        `https://cdn.example/${mark}-${from + 2 * i}.ts`,
+      );
+    }
+    for (let k = 1; k <= prefetch; k += 1) {
+      out.push(`#EXT-X-TWITCH-PREFETCH:https://cdn.example/${mark}-${from + 10 + 2 * k}.ts`);
+    }
+    return `${out.join("\n")}\n`;
+  }
+  /** The line just before the one naming `uri`. */
+  const before = (body, uri) => {
+    const all = body.split("\n");
+    return all[all.findIndex((l) => l.includes(uri)) - 1];
+  };
+
+  it("joins on the first prefetched segment, two seconds back rather than six", async () => {
+    const { blocker, events } = setup({ clean: ["popout"], cleanBody: stamped("clean", 500, 6, 2) });
+    await blocker.onMedia(URL_MEDIA, stamped("a", 100, 0, 2)); // holds up to 16s
+    await blocker.onMedia(URL_MEDIA, preroll()); // replacement 16s listed + 18s, 20s prefetched: holds up to 22s
+
+    // Original back: listed 8..18s, prefetched 20s and 22s. 22s is the edge.
+    const back = await blocker.onMedia(URL_MEDIA, stamped("a", 140, 8, 2));
+    const line = events.filter((e) => e.type === "log" && /original feed/.test(e.message)).pop();
+    assert.match(line.message, /joins at -2\.0s/, "not -6s, and not the edge");
+    assert.equal(readMediaSequence(back), 110, "the newest listed segment, under a number already held");
+    assert.equal(before(back, "a-20.ts"), "#EXT-X-DISCONTINUITY", "flagged in front of the prefetch line");
+    assert.equal((back.match(/#EXT-X-DISCONTINUITY/g) || []).length, 1);
+
+    // The segment then moves from prefetch to listed, keeping its number and its flag.
+    const listed = await blocker.onMedia(URL_MEDIA, stamped("a", 141, 10, 2));
+    assert.equal(readMediaSequence(listed), 111, "a-20 is 111, as it was when prefetched");
+    assert.ok(listed.indexOf("#EXT-X-DISCONTINUITY") < listed.indexOf("a-20.ts"));
+    assert.equal((listed.match(/#EXT-X-DISCONTINUITY/g) || []).length, 1);
+  });
+});

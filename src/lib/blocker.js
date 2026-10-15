@@ -47,21 +47,38 @@ import {
  *
  * `heldUntil` is the content time the player already holds pictures up to.
  * The join is the first segment that is mostly new; when the new feed is
- * behind and every segment is old, its last segment, which replays the least.
+ * behind and every segment is old, its newest one, which replays the least.
  * Without timestamps on either side there is nothing to align on, and the feed
  * is joined at its start as before.
  *
- * `gap` is the content time between what was held and the joined segment, in
- * seconds: positive skips ahead, negative replays.
+ * The prefetch segments count. They carry no timestamp, but they follow the
+ * last listed one at its own duration, and the player downloads them like any
+ * other. Joining among the listed segments only replayed six seconds at the end
+ * of every break, every time: the player had prefetched two segments of the
+ * replacement, and the original had nothing listed that recent yet — its
+ * matching segments were in its own prefetch.
+ *
+ * `index` counts listed segments first, then prefetch lines. `gap` is the
+ * content time between what was held and the joined segment, in seconds:
+ * positive skips ahead, negative replays.
  */
 export function joinPoint(body, heldUntil) {
   const times = segmentTimes(body);
   if (!times.length || !Number.isFinite(heldUntil)) return { index: 0, gap: NaN };
-  let index = times.findIndex(
+  const last = times[times.length - 1];
+  const candidates = [...times];
+  // All but the last. The last prefetch segment is the live edge itself, not
+  // yet produced: joining there left the player waiting for it once its own
+  // buffer had run out — measured, a stall of one to four seconds on one
+  // return in five. The one before it is already on its way.
+  for (let k = 1; k < countPrefetch(body); k += 1) {
+    candidates.push({ start: last.start + last.duration * 1000 * k, duration: last.duration });
+  }
+  let index = candidates.findIndex(
     (t) => Number.isFinite(t.start) && t.start + t.duration * 500 > heldUntil,
   );
-  if (index === -1) index = times.length - 1;
-  const start = times[index].start;
+  if (index === -1) index = candidates.length - 1;
+  const start = candidates[index].start;
   if (!Number.isFinite(start)) return { index: 0, gap: NaN };
   return { index, gap: (start - heldUntil) / 1000 };
 }

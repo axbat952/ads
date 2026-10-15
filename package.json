@@ -9,9 +9,10 @@
     "smoke": "node tests/smoke.mjs",
     "probe": "node tests/probe-candidates.mjs",
     "switch": "node tests/switch.mjs",
-    "playback": "node tests/playback.mjs"
+    "playback": "node tests/playback.mjs",
+    "breakend": "node tests/breakend.mjs"
   },
-  "version": "1.3.0",
+  "version": "1.3.1",
   "engines": {
     "node": ">=22"
   }
